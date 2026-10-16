@@ -37,11 +37,13 @@ class Tests(unittest.TestCase):
     def raise_for_status(self): pass
    with patch.object(m.requests,"get",return_value=Response()):
     nodes=m.load_nodes("https://one.example/list")
-  self.assertEqual(len(nodes),1)
+  self.assertEqual(len(nodes),2)
   self.assertEqual(nodes[0]["server"],"162.159.198.1")
   self.assertEqual(nodes[0]["port"],443)
   self.assertEqual(nodes[0]["password"],"secret")
   self.assertEqual(nodes[0]["servername"],"service.example")
+  self.assertNotIn("Host",nodes[0]["ws-opts"].get("headers",{}))
+  self.assertEqual(nodes[1]["ws-opts"]["headers"]["Host"],"service.example")
  def test_single_subscription_still_supported(self):
   class Response:
    content=b"trojan://secret@example.com:443#Singapore"

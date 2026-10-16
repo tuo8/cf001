@@ -63,11 +63,38 @@ def endpoint_nodes(text,template):
   if not match:continue
   port=int(match.group("port"))
   if not 1<=port<=65535:continue
-  p=dict(template)
-  p["server"]=match.group("host");p["port"]=port
+  base=dict(template)
+  base["server"]=match.group("host");base["port"]=port
   suffix=(match.group("remark") or "").strip()
-  p["name"]=f"{template.get('name','Proxy')} {p['server']}:{port}"+(f" {suffix}" if suffix else "")
-  result.append(p)
+  label=f"{base['server']}:{port}"+(f" {suffix}" if suffix else "")
+  variants=[]
+  ws_opts=base.get("ws-opts")
+  if base.get("network")=="ws" and isinstance(ws_opts,dict):
+   # Try no explicit WebSocket Host first, then the configured TLS servername.
+   without_host=dict(base)
+   opts=dict(ws_opts)
+   headers=dict(opts.get("headers") or {})
+   headers.pop("Host",None)
+   if headers:opts["headers"]=headers
+   else:opts.pop("headers",None)
+   without_host["ws-opts"]=opts
+   variants.append((without_host,"Host-auto"))
+   with_sni=dict(base)
+   opts=dict(ws_opts)
+   headers=dict(opts.get("headers") or {})
+   host_value=str(base.get("servername") or headers.get("Host") or "").strip()
+   if host_value:
+    headers["Host"]=host_value
+    opts["headers"]=headers
+    with_sni["ws-opts"]=opts
+    variants.append((with_sni,"Host-SNI"))
+   else:
+    variants.append((dict(base),"Host-template"))
+  else:
+   variants.append((base,""))
+  for p,mode in variants:
+   p["name"]=f"{template.get('name','Proxy')} {label}"+(f" [{mode}]" if mode else "")
+   result.append(p)
  return result
 
 def source_items(value):
