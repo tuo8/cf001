@@ -40,7 +40,7 @@ class Tests(unittest.TestCase):
   self.assertEqual(len(nodes),2)
   self.assertEqual(nodes[0]["server"],"162.159.198.1")
   self.assertEqual(nodes[0]["port"],443)
-  self.assertEqual(nodes[0]["password"],"secret")
+  self.assertEqual(nodes[0]["uuid"],"test-uuid")
   self.assertEqual(nodes[0]["servername"],"service.example")
   self.assertNotIn("Host",nodes[0]["ws-opts"].get("headers",{}))
   self.assertEqual(nodes[1]["ws-opts"]["headers"]["Host"],"service.example")
