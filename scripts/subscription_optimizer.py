@@ -144,9 +144,18 @@ def load_nodes(value):
   else:
    limit=max(1,int(os.getenv("ENDPOINT_MAX_CANDIDATES","60")))
    picked=[];depth=0
-   while len(picked)<limit and any(depth<len(group) for group in endpoint_groups):
+   def endpoint_keys(group):
+    keys=[]
+    for node in group:
+     key=(node.get("server"),node.get("port"))
+     if key not in keys:keys.append(key)
+    return keys
+   while any(depth<len(endpoint_keys(group)) for group in endpoint_groups) and depth<limit:
     for group in endpoint_groups:
-     if depth<len(group) and len(picked)<limit:picked.append(group[depth])
+     keys=endpoint_keys(group)
+     if depth<len(keys):
+      key=keys[depth]
+      picked.extend(node for node in group if (node.get("server"),node.get("port"))==key)
     depth+=1
    nodes.extend(picked)
    print(f"模板生成候选节点总数={sum(len(g) for g in endpoint_groups)}；本轮最多测试={len(picked)}（ENDPOINT_MAX_CANDIDATES）")
