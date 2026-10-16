@@ -65,7 +65,7 @@ def region(p):
   if any(w in n for w in ws):return c
  return "UNKNOWN"
 def probe(p,binary,folder):
- cfg={"mixed-port":17890,"mode":"global","log-level":"error","proxies":[p],"proxy-groups":[{"name":"TEST","type":"select","proxies":[p["name"]]}],"rules":["MATCH,TEST"]}
+ cfg={"mixed-port":17890,"mode":"rule","log-level":"error","proxies":[p],"proxy-groups":[{"name":"TEST","type":"select","proxies":[p["name"]]}],"rules":["MATCH,TEST"]}
  f=folder/"p.yaml";f.write_text(yaml.safe_dump(cfg,allow_unicode=True,sort_keys=False))
  proc=subprocess.Popen([binary,"-f",str(f)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
  try:
