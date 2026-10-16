@@ -31,11 +31,12 @@ jobs:
           chmod +x install.sh cfst-region.sh
           ./install.sh
 
-      - name: Run existing selector
+           - name: Run CFST selector
+        env:
+          OUTPUT_DIR: dist
         run: |
           ./cfst-region.sh
-          echo "Inspect the script's actual output path before enabling publication."
-
+          test -s dist/alive.txt
       - name: Validate result
         env:
           RESULT_FILE: dist/alive.txt
