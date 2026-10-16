@@ -33,7 +33,22 @@ def node_key(p):
  return json.dumps({k:v for k,v in p.items() if k != "name"},sort_keys=True,separators=(",",":"),ensure_ascii=False)
 def load_nodes(value):
  nodes=[]
- for item in source_items(value): nodes.extend(parse(source(item)))
+ items=source_items(value)
+ for index,item in enumerate(items,1):
+  text=source(item)
+  parsed=parse(text)
+  if not parsed:
+   stripped=text.lstrip()
+   if stripped.startswith("<"):kind="html_or_xml"
+   elif stripped.startswith(("{","[")):kind="json_or_yaml_without_proxies"
+   elif is_clash_yaml(text):kind="clash_yaml"
+   elif "://" in text:kind="unsupported_uri_or_format"
+   elif not stripped:kind="empty_response"
+   else:kind="unrecognized_text"
+   print(f"订阅源#{index}: 解码字符数={len(text)}，格式={kind}，节点数=0")
+  else:
+   print(f"订阅源#{index}: 解码字符数={len(text)}，节点数={len(parsed)}")
+  nodes.extend(parsed)
  return nodes
 def clean_nodes(nodes):
  used=set();seen=set();clean=[]
