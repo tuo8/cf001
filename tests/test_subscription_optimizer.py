@@ -20,14 +20,14 @@ class Tests(unittest.TestCase):
   class Response:
    def __init__(self,content): self.content=content
    def raise_for_status(self): pass
-  with patch("opt.requests.get",side_effect=[Response(a),Response(b)]) as get: nodes=m.load_nodes("https://one.example/sub\\nhttps://two.example/sub")
+  with patch.object(m.requests,"get",side_effect=[Response(a),Response(b)]) as get: nodes=m.load_nodes("https://one.example/sub\\nhttps://two.example/sub")
   self.assertEqual(get.call_count,2);self.assertEqual(len(nodes),3)
   clean=m.clean_nodes(nodes);self.assertEqual(len(clean),2);self.assertEqual(clean[0]["name"],"Singapore A")
  def test_single_subscription_still_supported(self):
   class Response:
    content=b"trojan://secret@example.com:443#Singapore"
    def raise_for_status(self): pass
-  with patch("opt.requests.get",return_value=Response()): nodes=m.load_nodes("https://one.example/sub")
+  with patch.object(m.requests,"get",return_value=Response()): nodes=m.load_nodes("https://one.example/sub")
   self.assertEqual(len(nodes),1);self.assertEqual(nodes[0]["type"],"trojan")
 
 if __name__=="__main__":unittest.main()
