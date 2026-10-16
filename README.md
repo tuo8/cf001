@@ -4,7 +4,7 @@
 
 ## 代理订阅优选器
 
-1. 打开仓库 **Settings → Secrets and variables → Actions**，新增 repository secret `SUBSCRIPTION_URL`（完整订阅 URL）。不要把真实订阅链接或凭据提交到仓库。
+1. 打开仓库 **Settings → Secrets and variables → Actions**，新增 repository secret `SUBSCRIPTION_URL`（单个 URL，或每行一个的多个 URL；自动合并并去重）。不要把真实订阅链接或凭据提交到仓库。
 2. 打开 **Actions → Subscription Optimizer → Run workflow**，可选填区域代码（如 `SIN,NRT`）及排名方式；也会每 6 小时自动运行。
 3. **仓库目前是公开的**。为避免泄露代理账号密码，工作流会跳过公开仓库的配置 artifact 上传。需要下载配置时，请先将仓库改为 **Private**，再运行工作流；随后从 run 的 **Artifacts** 下载 `clash-mi-subscription-*`（保留 1 天）。
 

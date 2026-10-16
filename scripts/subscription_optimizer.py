@@ -20,6 +20,26 @@ def source(s):
  p=Path(s)
  if p.is_file(): return decode(p.read_bytes())
  raise ValueError("invalid source")
+def source_items(value):
+ items=[line.strip() for line in value.splitlines() if line.strip() and not line.strip().startswith("#")]
+ if not items: raise ValueError("empty source list")
+ return items
+def node_key(p):
+ return json.dumps({k:v for k,v in p.items() if k != "name"},sort_keys=True,separators=(",",":"),ensure_ascii=False)
+def load_nodes(value):
+ nodes=[]
+ for item in source_items(value): nodes.extend(parse(source(item)))
+ return nodes
+def clean_nodes(nodes):
+ used=set();seen=set();clean=[]
+ for raw in nodes:
+  p=dict(raw);key=node_key(p)
+  if key in seen:continue
+  seen.add(key)
+  base=str(p.get("name") or "proxy")[:80];n=base;i=2
+  while n in used:n=f"{base}-{i}";i+=1
+  used.add(n);p["name"]=n;clean.append(p)
+ return clean
 def uri(s):
  if s.startswith("vmess://"):
   try:
@@ -92,13 +112,9 @@ def probe(p,binary,folder):
 def main():
  a=argparse.ArgumentParser();a.add_argument("--input",default=os.getenv("SUBSCRIPTION_URL",""));a.add_argument("--output",default="subscription/clash-mi.yaml");a.add_argument("--region",default=os.getenv("REGION_FILTER",""));a.add_argument("--sort",choices=["balanced","latency","speed"],default=os.getenv("SORT_BY","balanced"));a.add_argument("--top",type=int,default=int(os.getenv("TOP_N","30")));a.add_argument("--parse-only",action="store_true");x=a.parse_args()
  if not x.input:print("缺少 SUBSCRIPTION_URL",file=sys.stderr);return 2
- try:nodes=parse(source(x.input))
+ try:nodes=load_nodes(x.input)
  except Exception as e:print("订阅读取失败："+type(e).__name__,file=sys.stderr);return 2
- used=set();clean=[]
- for p in nodes:
-  p=dict(p);base=str(p.get("name") or "proxy")[:80];n=base;i=2
-  while n in used:n=f"{base}-{i}";i+=1
-  used.add(n);p["name"]=n;clean.append(p)
+ clean=clean_nodes(nodes)
  allowed={z.strip().upper() for z in x.region.split(",") if z.strip()}
  if allowed:clean=[p for p in clean if region(p) in allowed]
  res=[]
