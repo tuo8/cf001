@@ -28,6 +28,9 @@ class Tests(unittest.TestCase):
   sample="162.159.198.1:443#VPS789 TOP20\ncfyx.aliyun.20237737.xyz:443#VPS789优选\n"
   self.assertTrue(m.looks_like_endpoint_list(sample))
   self.assertFalse(m.looks_like_endpoint_list("trojan://secret@example.com:443#Singapore\n"))
+ def test_extract_endpoint_candidates(self):
+  sample="162.159.198.1:443#candidate one\nexample.com:8443#candidate two\n127.0.0.1:443\nexample.local:443\nexample.com:99999\n"
+  self.assertEqual(m.extract_endpoint_candidates(sample),[("162.159.198.1",443),("example.com",8443)])
  def test_endpoint_template_builds_proxy_nodes(self):
   template='name: Base\ntype: vless\nserver: original.example\nport: 443\nuuid: test-uuid\ntls: true\nservername: service.example\nnetwork: ws\nws-opts:\n  path: /\n  headers:\n    Host: service.example\n'
   sample="162.159.198.1:443#candidate one\ncfyx.aliyun.20237737.xyz:8443#candidate two\n"

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Parse common proxy subscriptions and create a Clash YAML config. Never log source URLs."""
-import argparse,base64,json,os,re,shutil,socket,subprocess,sys,tempfile,time
+import argparse,base64,concurrent.futures,ipaddress,json,os,re,shutil,socket,subprocess,sys,tempfile,time
 from pathlib import Path
 from urllib.parse import urlsplit,parse_qs,unquote
 import requests,yaml
@@ -257,9 +257,66 @@ def probe(p,binary,folder):
    proc.terminate()
    try:proc.wait(timeout=2)
    except subprocess.TimeoutExpired:proc.kill()
+def extract_endpoint_candidates(text):
+ """Return host/port pairs from an endpoint list, without assuming they are proxy configs."""
+ rows=[]
+ for line in text.splitlines():
+  line=line.strip()
+  if not line or line.startswith(("#","//")):continue
+  candidate=line.split("#",1)[0].strip()
+  m=re.fullmatch(r"(?P<host>[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?):\d{1,5}",candidate)
+  if not m:continue
+  port=int(candidate.rsplit(":",1)[1])
+  if not 1<=port<=65535:continue
+  host=m.group("host")
+  try:
+   addr=ipaddress.ip_address(host)
+   if not addr.is_global:continue
+  except ValueError:
+   if host.lower() == "localhost" or host.lower().endswith((".local",".localhost",".internal")):continue
+  pair=(host,port)
+  if pair not in rows:rows.append(pair)
+ return rows
+
+def endpoint_connectivity(value):
+ """TCP-check subscription endpoints only; this does not validate proxy protocol/auth."""
+ items=source_items(value); candidates=[]
+ for index,item in enumerate(items,1):
+  try:text=source(item)
+  except Exception as exc:
+   print(f"订阅源#{index}: 读取失败={type(exc).__name__}");continue
+  parsed=parse(text)
+  if parsed:
+   group=[]
+   for p in parsed:
+    host=str(p.get("server","")).strip()
+    try:port=int(p.get("port",0))
+    except (TypeError,ValueError):continue
+    if host and 1<=port<=65535 and (host,port) not in group:group.append((host,port))
+  elif looks_like_endpoint_list(text):group=extract_endpoint_candidates(text)
+  else:
+   print(f"订阅源#{index}: 未识别为代理节点或 host:port 清单");continue
+  candidates.extend(pair for pair in group if pair not in candidates)
+ limit=max(1,int(os.getenv("ENDPOINT_DIAGNOSTIC_MAX","500")))
+ if len(candidates)>limit:
+  print(f"候选地址总数={len(candidates)}；本轮按上限测试={limit}");candidates=candidates[:limit]
+ else:print(f"候选地址总数={len(candidates)}；本轮全部测试")
+ def check(pair):
+  try:
+   with socket.create_connection(pair,timeout=2):return True
+  except (OSError,TimeoutError):return False
+ with concurrent.futures.ThreadPoolExecutor(max_workers=40) as pool:results=list(pool.map(check,candidates))
+ opened=[pair for pair,ok in zip(candidates,results) if ok]
+ print(f"TCP 可连接={len(opened)}；TCP 未连接={len(candidates)-len(opened)}")
+ print("可连接地址（TCP 结果不代表代理认证或实际转发可用）:")
+ for host,port in opened[:100]:print(f"{host}:{port}")
+ if len(opened)>100:print(f"其余可连接地址未显示={len(opened)-100}")
+ return 0
+
 def main():
- a=argparse.ArgumentParser();a.add_argument("--input",default=os.getenv("SUBSCRIPTION_URL",""));a.add_argument("--output",default="subscription/clash-mi.yaml");a.add_argument("--region",default=os.getenv("REGION_FILTER",""));a.add_argument("--name-filter",default=os.getenv("NODE_NAME_FILTER",""));a.add_argument("--server-filter",default=os.getenv("NODE_SERVER_FILTER",""));a.add_argument("--inventory-only",action="store_true",help="print safe node inventory without testing or writing credentials");a.add_argument("--sort",choices=["balanced","latency","speed"],default=os.getenv("SORT_BY","balanced"));a.add_argument("--top",type=int,default=int(os.getenv("TOP_N","30")));a.add_argument("--parse-only",action="store_true");x=a.parse_args()
+ a=argparse.ArgumentParser();a.add_argument("--input",default=os.getenv("SUBSCRIPTION_URL",""));a.add_argument("--output",default="subscription/clash-mi.yaml");a.add_argument("--region",default=os.getenv("REGION_FILTER",""));a.add_argument("--name-filter",default=os.getenv("NODE_NAME_FILTER",""));a.add_argument("--server-filter",default=os.getenv("NODE_SERVER_FILTER",""));a.add_argument("--inventory-only",action="store_true",help="print safe node inventory without testing or writing credentials");a.add_argument("--endpoint-check-only",action="store_true",help="TCP-check subscription host:port endpoints without creating proxy configs");a.add_argument("--sort",choices=["balanced","latency","speed"],default=os.getenv("SORT_BY","balanced"));a.add_argument("--top",type=int,default=int(os.getenv("TOP_N","30")));a.add_argument("--parse-only",action="store_true");x=a.parse_args()
  if not x.input:print("缺少 SUBSCRIPTION_URL",file=sys.stderr);return 2
+ if x.endpoint_check_only:return endpoint_connectivity(x.input)
  try:nodes=load_nodes(x.input)
  except Exception as e:print("订阅读取失败："+type(e).__name__,file=sys.stderr);return 2
  print(f"订阅源数: {len(source_items(x.input))}; 解析节点数: {len(nodes)}")
