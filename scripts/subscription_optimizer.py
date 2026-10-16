@@ -14,11 +14,18 @@ def decode(b):
  s=b.decode("utf-8-sig","replace").strip()
  for _ in range(3):
   if s.startswith(("proxies:","---")) or "://" in s or is_clash_yaml(s): return s
-  try:
-   d=base64.b64decode(re.sub(r"\\s+","",s),validate=True).decode("utf-8-sig").strip()
-   if not d or d==s: break
-   s=d
-  except Exception: break
+  lines=[line.strip() for line in s.splitlines() if line.strip() and not line.lstrip().startswith(("#","//"))]
+  candidates=[re.sub(r"\\s+","",s),"".join(line for line in lines if re.fullmatch(r"[A-Za-z0-9+/=]+",line))]
+  decoded=None
+  for candidate in candidates:
+   if not candidate: continue
+   try:
+    d=base64.b64decode(candidate,validate=True).decode("utf-8-sig").strip()
+    if d and d!=s and ("://" in d or is_clash_yaml(d) or re.fullmatch(r"[A-Za-z0-9+/=\\s]+",d)):
+     decoded=d;break
+   except Exception: pass
+  if decoded is None: break
+  s=decoded
  return s
 
 def source(s):

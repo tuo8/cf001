@@ -42,4 +42,9 @@ class Tests(unittest.TestCase):
   nested=base64.b64encode(base64.b64encode(raw.encode()))
   self.assertIn("trojan://",m.decode(nested))
 
+ def test_base64_with_provider_comments(self):
+  raw="trojan://secret@example.com:443#Singapore"
+  body="# profile-title: Test\\n# update-interval: 24\\n"+base64.b64encode(raw.encode()).decode()
+  self.assertIn("trojan://",m.decode(body.encode()))
+
 if __name__=="__main__":unittest.main()
