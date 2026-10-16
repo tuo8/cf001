@@ -1,108 +1,66 @@
+
 name: Hourly Cloudflare IP Check
 
 on:
-workflow_dispatch:
-schedule:
-- cron: “17 * * * *”
+  workflow_dispatch:
+  schedule:
+    - cron: '17 * * * *'
 
 permissions:
-contents: read
-pages: write
-id-token: write
+  contents: read
+  pages: write
+  id-token: write
 
 concurrency:
-group: hourly-cfst
-cancel-in-progress: false
+  group: hourly-cfst
+  cancel-in-progress: false
 
 jobs:
-test:
-runs-on: ubuntu-latest
-timeout-minutes: 15
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
 
-steps:
-  - name: Checkout repository
-    uses: actions/checkout@v4
-  - name: Prepare directories
-    run: mkdir -p dist public scripts config
-  - name: Install CFST
-    run: |
-      chmod +x install.sh cfst-region.sh
-      ./install.sh
-  - name: Run CFST selector
-    env:
-      OUTPUT_DIR: dist
-    run: |
-      ./cfst-region.sh
-      test -s dist/alive.txt
-  - name: Validate result
-    env:
-      RESULT_FILE: dist/alive.txt
-    run: python3 scripts/validate_results.py
-  - name: Publish result file
-    env:
-      RESULT_FILE: dist/alive.txt
-      PUBLISH_FILE: public/alive.txt
-    run: python3 scripts/publish_results.py
-  - name: Configure GitHub Pages
-    uses: actions/configure-pages@v5
-  - name: Upload Pages artifact
-    uses: actions/upload-pages-artifact@v4
-    with:
-      path: public
-  - name: Deploy GitHub Pages
-    id: deployment
-    uses: actions/deploy-pages@v4
-name: Hourly Cloudflare IP Check
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-on:
-workflow_dispatch:
-schedule:
-- cron: “17 * * * *”
+      - name: Prepare directories
+        run: mkdir -p dist public scripts config
 
-permissions:
-contents: read
-pages: write
-id-token: write
+      - name: Install CFST
+        run: |
+          chmod +x install.sh cfst-region.sh
+          ./install.sh
 
-concurrency:
-group: hourly-cfst
-cancel-in-progress: false
+      - name: Run CFST selector
+        env:
+          OUTPUT_DIR: dist
+        run: |
+          ./cfst-region.sh
+          test -s dist/alive.txt
 
-jobs:
-test:
-runs-on: ubuntu-latest
-timeout-minutes: 15
+      - name: Validate result
+        env:
+          RESULT_FILE: dist/alive.txt
+        run: python3 scripts/validate_results.py
 
-steps:
-  - name: Checkout repository
-    uses: actions/checkout@v4
-  - name: Prepare directories
-    run: mkdir -p dist public scripts config
-  - name: Install CFST
-    run: |
-      chmod +x install.sh cfst-region.sh
-      ./install.sh
-  - name: Run CFST selector
-    env:
-      OUTPUT_DIR: dist
-    run: |
-      ./cfst-region.sh
-      test -s dist/alive.txt
-  - name: Validate result
-    env:
-      RESULT_FILE: dist/alive.txt
-    run: python3 scripts/validate_results.py
-  - name: Publish result file
-    env:
-      RESULT_FILE: dist/alive.txt
-      PUBLISH_FILE: public/alive.txt
-    run: python3 scripts/publish_results.py
-  - name: Configure GitHub Pages
-    uses: actions/configure-pages@v5
-  - name: Upload Pages artifact
-    uses: actions/upload-pages-artifact@v4
-    with:
-      path: public
-  - name: Deploy GitHub Pages
-    id: deployment
-    uses: actions/deploy-pages@v4
+      - name: Publish result file
+        env:
+          RESULT_FILE: dist/alive.txt
+          PUBLISH_FILE: public/alive.txt
+        run: python3 scripts/publish_results.py
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: public
+
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+        environment:
+          name: github-pages
+          url: ${{ steps.deployment.outputs.page_url }}
