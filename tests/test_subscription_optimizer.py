@@ -28,6 +28,20 @@ class Tests(unittest.TestCase):
   sample="162.159.198.1:443#VPS789 TOP20\\ncfyx.aliyun.20237737.xyz:443#VPS789优选\\n"
   self.assertTrue(m.looks_like_endpoint_list(sample))
   self.assertFalse(m.looks_like_endpoint_list("trojan://secret@example.com:443#Singapore\\n"))
+ def test_endpoint_template_builds_proxy_nodes(self):
+  template='name: Base\\ntype: trojan\\nserver: original.example\\nport: 443\\npassword: secret\\ntls: true\\nservername: service.example\\n'
+  sample="162.159.198.1:443#candidate one\\ncfyx.aliyun.20237737.xyz:8443#candidate two\\n"
+  with patch.dict("os.environ",{"CLASH_PROXY_TEMPLATE":template,"ENDPOINT_MAX_CANDIDATES":"1"}):
+   class Response:
+    content=sample.encode()
+    def raise_for_status(self): pass
+   with patch.object(m.requests,"get",return_value=Response()):
+    nodes=m.load_nodes("https://one.example/list")
+  self.assertEqual(len(nodes),1)
+  self.assertEqual(nodes[0]["server"],"162.159.198.1")
+  self.assertEqual(nodes[0]["port"],443)
+  self.assertEqual(nodes[0]["password"],"secret")
+  self.assertEqual(nodes[0]["servername"],"service.example")
  def test_single_subscription_still_supported(self):
   class Response:
    content=b"trojan://secret@example.com:443#Singapore"

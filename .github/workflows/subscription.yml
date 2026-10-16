@@ -44,6 +44,8 @@ jobs:
       - name: Optimize and validate
         env:
           SUBSCRIPTION_URL: ${{ secrets.SUBSCRIPTION_URL }}
+          CLASH_PROXY_TEMPLATE: ${{ secrets.CLASH_PROXY_TEMPLATE }}
+          ENDPOINT_MAX_CANDIDATES: ${{ vars.ENDPOINT_MAX_CANDIDATES || '60' }}
           REGION_FILTER: ${{ github.event.inputs.region }}
           SORT_BY: ${{ github.event.inputs.sort || 'balanced' }}
           TOP_N: ${{ vars.SUBSCRIPTION_TOP_N || '30' }}

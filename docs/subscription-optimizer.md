@@ -11,7 +11,7 @@ Actions → Subscription Optimizer → Run workflow 可手动运行；计划任�
 生成的 Clash YAML 含有代理认证参数。**当前仓库为公开仓库**，因此工作流刻意跳过 artifact 上传，避免任何人下载到你的代理凭据。若要在 Actions 页面下载配置，请先在 GitHub 仓库 Settings → General → Danger Zone 中将仓库设为 **Private**，再重新运行工作流。配置不会提交到仓库，也不会发布到 GitHub Pages。私有仓库中的 artifact 默认保留 1 天，仍不要分享给无权访问的人。
 
 ## 限制
-支持 Clash YAML、Base64 订阅及常见 SS、VMess、VLESS、Trojan、SOCKS、HTTP、Hysteria2 URI 的常见参数。复杂 Reality、插件、SSR 或供应商私有格式可能需要扩展。 像 `https://bestcf.pages.dev/vps789/top20.txt` 这类 `域名/IP:端口#备注` 列表是 Cloudflare 优选候选地址，不是代理订阅：它不包含 UUID、密码、协议和传输参数，不能单独转换成可用代理节点。工作流会识别并提示这种格式；若要用这类候选地址，需要另行提供基础 Clash 节点模板，并实现将候选地址写入模板的功能。真实测速要求 Mihomo；只有通过代理连通性和下载测试的节点才进入配置。地区按节点名称标签判断，并非 GeoIP 证明。parse-only 仅用于格式测试，不代表节点可用。
+支持 Clash YAML、Base64 订阅及常见 SS、VMess、VLESS、Trojan、SOCKS、HTTP、Hysteria2 URI 的常见参数。复杂 Reality、插件、SSR 或供应商私有格式可能需要扩展。 像 `https://bestcf.pages.dev/vps789/top20.txt` 这类 `域名/IP:端口#备注` 列表是 Cloudflare 优选候选地址，不是代理订阅：它不包含 UUID、密码、协议和传输参数，不能单独转换成可用代理节点。工作流会识别并提示这种格式；若要用这类候选地址，可在 Actions Secrets 新增 `CLASH_PROXY_TEMPLATE`，内容为一个可用的 Clash Mi `proxies` 节点对象（YAML 或 JSON），保留真实协议、UUID/密码、TLS、SNI、WS 等参数。程序仅替换模板的 `server`、`port` 和 `name`，然后用 Mihomo 实测；不要把模板写入公开仓库。默认最多测试 60 个候选地址，可用 Actions Variable `ENDPOINT_MAX_CANDIDATES` 调整。未设置模板时不会生成伪造节点。真实测速要求 Mihomo；只有通过代理连通性和下载测试的节点才进入配置。地区按节点名称标签判断，并非 GeoIP 证明。parse-only 仅用于格式测试，不代表节点可用。
 
 ## 本地运行
 ```bash

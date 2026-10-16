@@ -45,6 +45,31 @@ def looks_like_endpoint_list(s):
    matched+=1
  return matched >= 1 and matched / len(rows) >= 0.6
 
+def parse_proxy_template(value):
+ if not value.strip():return None
+ try:p=yaml.safe_load(value)
+ except Exception as e:raise ValueError("invalid proxy template YAML/JSON") from e
+ if not isinstance(p,dict) or not p.get("type") or not p.get("server") or not p.get("port"):
+  raise ValueError("proxy template must be one Clash proxy mapping with type, server and port")
+ return p
+
+def endpoint_nodes(text,template):
+ if not template:return []
+ result=[]
+ for line in text.splitlines():
+  line=line.strip()
+  if not line or line.startswith(("#","//")):continue
+  match=re.fullmatch(r"(?P<host>[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?):(?P<port>\\d{1,5})(?:\\s*#(?P<remark>.*))?",line)
+  if not match:continue
+  port=int(match.group("port"))
+  if not 1<=port<=65535:continue
+  p=dict(template)
+  p["server"]=match.group("host");p["port"]=port
+  suffix=(match.group("remark") or "").strip()
+  p["name"]=f"{template.get('name','Proxy')} {p['server']}:{port}"+(f" {suffix}" if suffix else "")
+  result.append(p)
+ return result
+
 def source_items(value):
  items=[line.strip() for line in value.splitlines() if line.strip() and not line.strip().startswith("#")]
  if not items: raise ValueError("empty source list")
@@ -52,8 +77,10 @@ def source_items(value):
 def node_key(p):
  return json.dumps({k:v for k,v in p.items() if k != "name"},sort_keys=True,separators=(",",":"),ensure_ascii=False)
 def load_nodes(value):
- nodes=[]
+ nodes=[];endpoint_groups=[]
  items=source_items(value)
+ template_text=os.getenv("CLASH_PROXY_TEMPLATE","")
+ template=None
  for index,item in enumerate(items,1):
   text=source(item)
   parsed=parse(text)
@@ -61,8 +88,11 @@ def load_nodes(value):
    stripped=text.lstrip()
    if looks_like_endpoint_list(text):
     rows=[line.strip() for line in text.splitlines() if line.strip() and not line.lstrip().startswith(("#","//"))]
-    count=sum(1 for line in rows if re.fullmatch(r"(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?):\d{1,5}(?:#.*)?",line))
-    print(f"订阅源#{index}: 格式=endpoint_list_not_proxy_subscription，候选地址数={count}，节点数=0；该列表只有域名/IP和端口，必须配合已有 Clash 节点模板，不能单独测速生成代理节点")
+    if template_text.strip() and template is None:template=parse_proxy_template(template_text)
+    candidates=endpoint_nodes(text,template)
+    endpoint_groups.append(candidates)
+    count=sum(1 for line in rows if re.fullmatch(r"(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?):\\d{1,5}(?:\\s*#.*)?",line))
+    print(f"订阅源#{index}: 格式=endpoint_list_not_proxy_subscription，候选地址数={count}，模板生成节点数={len(candidates)}")
     continue
    if stripped.startswith("<"):kind="html_or_xml"
    elif stripped.startswith(("{","[")):kind="json_or_yaml_without_proxies"
@@ -81,6 +111,18 @@ def load_nodes(value):
   else:
    print(f"订阅源#{index}: 解码字符数={len(text)}，节点数={len(parsed)}")
   nodes.extend(parsed)
+ if endpoint_groups:
+  if not template_text.strip():
+   print("提示：检测到 Cloudflare IP/域名候选列表，但未设置 CLASH_PROXY_TEMPLATE；这些地址无法单独构成代理节点")
+  else:
+   limit=max(1,int(os.getenv("ENDPOINT_MAX_CANDIDATES","60")))
+   picked=[];depth=0
+   while len(picked)<limit and any(depth<len(group) for group in endpoint_groups):
+    for group in endpoint_groups:
+     if depth<len(group) and len(picked)<limit:picked.append(group[depth])
+    depth+=1
+   nodes.extend(picked)
+   print(f"模板生成候选节点总数={sum(len(g) for g in endpoint_groups)}；本轮最多测试={len(picked)}（ENDPOINT_MAX_CANDIDATES）")
  return nodes
 def clean_nodes(nodes):
  used=set();seen=set();clean=[]
