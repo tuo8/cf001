@@ -29,7 +29,7 @@ class Tests(unittest.TestCase):
   self.assertTrue(m.looks_like_endpoint_list(sample))
   self.assertFalse(m.looks_like_endpoint_list("trojan://secret@example.com:443#Singapore\n"))
  def test_endpoint_template_builds_proxy_nodes(self):
-  template='name: Base\ntype: trojan\nserver: original.example\nport: 443\npassword: secret\ntls: true\nservername: service.example\n'
+  template='name: Base\ntype: vless\nserver: original.example\nport: 443\nuuid: test-uuid\ntls: true\nservername: service.example\nnetwork: ws\nws-opts:\n  path: /\n  headers:\n    Host: service.example\n'
   sample="162.159.198.1:443#candidate one\ncfyx.aliyun.20237737.xyz:8443#candidate two\n"
   with patch.dict("os.environ",{"CLASH_PROXY_TEMPLATE":template,"ENDPOINT_MAX_CANDIDATES":"1"}):
    class Response:
