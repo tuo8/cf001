@@ -1,0 +1,63 @@
+name: Subscription Optimizer
+on:
+  workflow_dispatch:
+    inputs:
+      region:
+        description: 区域代码，例如 SIN,NRT；留空为全部
+        required: false
+        default: ''
+      sort:
+        description: 排名方式
+        type: choice
+        options: [balanced, latency, speed]
+        default: balanced
+  schedule:
+    - cron: '23 */6 * * *'
+permissions:
+  contents: read
+concurrency:
+  group: subscription-optimizer
+  cancel-in-progress: false
+jobs:
+  optimize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-subscription.txt
+      - name: Install Mihomo
+        shell: bash
+        run: |
+          set -euo pipefail
+          V="$(curl -fsSL https://api.github.com/repos/MetaCubeX/mihomo/releases/latest | python -c 'import json,sys;print(json.load(sys.stdin)["tag_name"])')"
+          U="$(curl -fsSL "https://api.github.com/repos/MetaCubeX/mihomo/releases/tags/$V" | python -c 'import json,sys;d=json.load(sys.stdin);print(next((a["browser_download_url"] for a in d["assets"] if "linux-amd64-compatible" in a["name"] and a["name"].endswith(".gz")),""))')"
+          test -n "$U"; curl -fsSL "$U" | gunzip > "$RUNNER_TEMP/mihomo"; chmod +x "$RUNNER_TEMP/mihomo"
+          echo "MIHOMO_PATH=$RUNNER_TEMP/mihomo" >> "$GITHUB_ENV"
+      - name: Optimize and validate
+        env:
+          SUBSCRIPTION_URL: ${{ secrets.SUBSCRIPTION_URL }}
+          REGION_FILTER: ${{ github.event.inputs.region }}
+          SORT_BY: ${{ github.event.inputs.sort || 'balanced' }}
+          TOP_N: ${{ vars.SUBSCRIPTION_TOP_N || '30' }}
+          DOWNLOAD_TEST_URL: ${{ vars.DOWNLOAD_TEST_URL || 'https://speed.cloudflare.com/__down?bytes=1000000' }}
+        run: |
+          set -euo pipefail
+          test -n "$SUBSCRIPTION_URL" || { echo "::error::请设置 SUBSCRIPTION_URL secret"; exit 2; }
+          python scripts/subscription_optimizer.py --output "$RUNNER_TEMP/clash-mi.yaml"
+          python - "$RUNNER_TEMP/clash-mi.yaml" <<'PY'
+          import sys,yaml
+          d=yaml.safe_load(open(sys.argv[1],encoding='utf-8'))
+          assert d.get('proxies') and d.get('proxy-groups') and d.get('rules')
+          names={p['name'] for p in d['proxies']}
+          assert all(n in names for g in d['proxy-groups'] for n in g.get('proxies',[]))
+          print('Clash YAML structure valid:',len(names),'proxies')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clash-mi-subscription-${{ github.run_number }}
+          path: ${{ runner.temp }}/clash-mi.yaml
+          if-no-files-found: error
+          retention-days: 1
