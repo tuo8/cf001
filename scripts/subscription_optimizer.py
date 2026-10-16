@@ -258,13 +258,20 @@ def probe(p,binary,folder):
    try:proc.wait(timeout=2)
    except subprocess.TimeoutExpired:proc.kill()
 def main():
- a=argparse.ArgumentParser();a.add_argument("--input",default=os.getenv("SUBSCRIPTION_URL",""));a.add_argument("--output",default="subscription/clash-mi.yaml");a.add_argument("--region",default=os.getenv("REGION_FILTER",""));a.add_argument("--sort",choices=["balanced","latency","speed"],default=os.getenv("SORT_BY","balanced"));a.add_argument("--top",type=int,default=int(os.getenv("TOP_N","30")));a.add_argument("--parse-only",action="store_true");x=a.parse_args()
+ a=argparse.ArgumentParser();a.add_argument("--input",default=os.getenv("SUBSCRIPTION_URL",""));a.add_argument("--output",default="subscription/clash-mi.yaml");a.add_argument("--region",default=os.getenv("REGION_FILTER",""));a.add_argument("--name-filter",default=os.getenv("NODE_NAME_FILTER",""));a.add_argument("--sort",choices=["balanced","latency","speed"],default=os.getenv("SORT_BY","balanced"));a.add_argument("--top",type=int,default=int(os.getenv("TOP_N","30")));a.add_argument("--parse-only",action="store_true");x=a.parse_args()
  if not x.input:print("缺少 SUBSCRIPTION_URL",file=sys.stderr);return 2
  try:nodes=load_nodes(x.input)
  except Exception as e:print("订阅读取失败："+type(e).__name__,file=sys.stderr);return 2
  print(f"订阅源数: {len(source_items(x.input))}; 解析节点数: {len(nodes)}")
  clean=clean_nodes(nodes)
  print(f"去重后节点数: {len(clean)}")
+ if x.name_filter.strip():
+  needle=x.name_filter.strip().casefold()
+  before=len(clean)
+  clean=[p for p in clean if needle in str(p.get("name","")).casefold()]
+  print(f"名称筛选: 关键字={x.name_filter.strip()!r}；筛选前={before}；匹配节点={len(clean)}")
+  if not clean:
+   print("名称筛选没有匹配节点；请核对订阅中的节点名称",file=sys.stderr);return 6
  allowed={z.strip().upper() for z in x.region.split(",") if z.strip()}
  if allowed:clean=[p for p in clean if region(p) in allowed]
  print(f"地区筛选后节点数: {len(clean)}")
