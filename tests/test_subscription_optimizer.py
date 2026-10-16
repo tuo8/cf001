@@ -33,7 +33,7 @@ class Tests(unittest.TestCase):
 
 
  def test_full_clash_yaml_with_top_level_settings(self):
-  raw="mixed-port: 7890\\nmode: rule\\nproxies:\\n  - name: 'Singapore 01'\\n    type: ss\\n    server: example.com\\n    port: 443\\n    cipher: aes-128-gcm\\n    password: secret\\n"
+  raw="mixed-port: 7890\nmode: rule\nproxies:\n  - name: 'Singapore 01'\n    type: ss\n    server: example.com\n    port: 443\n    cipher: aes-128-gcm\n    password: secret\n"
   self.assertEqual(len(m.parse(raw)),1)
   self.assertEqual(len(m.parse(m.decode(base64.b64encode(raw.encode())))),1)
 
