@@ -114,9 +114,12 @@ def main():
  if not x.input:print("缺少 SUBSCRIPTION_URL",file=sys.stderr);return 2
  try:nodes=load_nodes(x.input)
  except Exception as e:print("订阅读取失败："+type(e).__name__,file=sys.stderr);return 2
+ print(f"订阅源数: {len(source_items(x.input))}; 解析节点数: {len(nodes)}")
  clean=clean_nodes(nodes)
+ print(f"去重后节点数: {len(clean)}")
  allowed={z.strip().upper() for z in x.region.split(",") if z.strip()}
  if allowed:clean=[p for p in clean if region(p) in allowed]
+ print(f"地区筛选后节点数: {len(clean)}")
  res=[]
  if x.parse_only:res=[(p,None,None) for p in clean]
  else:
@@ -130,7 +133,7 @@ def main():
  elif x.sort=="speed":res.sort(key=lambda z:(z[2] is None,-(z[2] or 0)))
  else:res.sort(key=lambda z:(z[1] is None,z[1] or 1e9,-(z[2] or 0)))
  res=res[:max(1,x.top)]
- if not res:print("没有通过测速的节点，未生成配置",file=sys.stderr);return 5
+ if not res:print(f"测速未通过：待测节点 {len(clean)}，通过节点 {len(res)}；未生成配置",file=sys.stderr);return 5
  doc={"proxies":[z[0] for z in res],"proxy-groups":[{"name":"优选节点","type":"select","proxies":[z[0]["name"] for z in res]}],"rules":["MATCH,优选节点"]}
  dest=Path(x.output);dest.parent.mkdir(parents=True,exist_ok=True);dest.write_text(yaml.safe_dump(doc,allow_unicode=True,sort_keys=False),encoding="utf-8")
  assert len(yaml.safe_load(dest.read_text())["proxies"])==len(res)
