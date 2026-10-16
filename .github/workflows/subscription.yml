@@ -11,6 +11,11 @@ on:
         type: choice
         options: [balanced, latency, speed]
         default: balanced
+      subscription_source:
+        description: 测试哪个订阅源
+        type: choice
+        options: [original, test]
+        default: original
   schedule:
     - cron: '23 */6 * * *'
 permissions:
@@ -43,7 +48,7 @@ jobs:
           echo "MIHOMO_PATH=$RUNNER_TEMP/mihomo" >> "$GITHUB_ENV"
       - name: Optimize and validate
         env:
-          SUBSCRIPTION_URL: ${{ secrets.SUBSCRIPTION_URL }}
+          SUBSCRIPTION_URL: ${{ github.event.inputs.subscription_source == 'test' && secrets.TEST_SUBSCRIPTION_URL || secrets.SUBSCRIPTION_URL }}
           CLASH_PROXY_TEMPLATE: ${{ secrets.CLASH_PROXY_TEMPLATE }}
           ENDPOINT_MAX_CANDIDATES: ${{ vars.ENDPOINT_MAX_CANDIDATES || '60' }}
           REGION_FILTER: ${{ github.event.inputs.region }}
@@ -52,7 +57,7 @@ jobs:
           DOWNLOAD_TEST_URL: ${{ vars.DOWNLOAD_TEST_URL || 'https://speed.cloudflare.com/__down?bytes=1000000' }}
         run: |
           set -euo pipefail
-          test -n "$SUBSCRIPTION_URL" || { echo "::error::请设置 SUBSCRIPTION_URL secret"; exit 2; }
+          test -n "$SUBSCRIPTION_URL" || { echo "::error::请设置对应的 TEST_SUBSCRIPTION_URL 或 SUBSCRIPTION_URL secret"; exit 2; }
           python scripts/subscription_optimizer.py --output "$RUNNER_TEMP/clash-mi.yaml"
           python - "$RUNNER_TEMP/clash-mi.yaml" <<'PY'
           import sys,yaml
