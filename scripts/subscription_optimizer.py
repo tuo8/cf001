@@ -307,9 +307,13 @@ def endpoint_connectivity(value):
   except (OSError,TimeoutError):return False
  with concurrent.futures.ThreadPoolExecutor(max_workers=40) as pool:results=list(pool.map(check,candidates))
  opened=[pair for pair,ok in zip(candidates,results) if ok]
- print(f"TCP 可连接={len(opened)}；TCP 未连接={len(candidates)-len(opened)}")
- print("可连接地址（TCP 结果不代表代理认证或实际转发可用）:")
- for host,port in opened:print(f"{host}:{port}")
+ ip_results=[];domain_count=0
+ for pair,ok in zip(candidates,results):
+  try:ipaddress.ip_address(pair[0]);ip_results.append((pair,ok))
+  except ValueError:domain_count+=1
+ print(f"TCP 可连接={len(opened)}；TCP 未连接={len(candidates)-len(opened)}；其中 IP 地址={len(ip_results)}；域名地址={domain_count}")
+ print("IP 地址 TCP 结果（只代表 TCP 端口可连接，不代表代理认证或转发可用）:")
+ for (host,port),ok in ip_results:print(f"{host}:{port} TCP={'OPEN' if ok else 'CLOSED'}")
  return 0
 
 def main():
