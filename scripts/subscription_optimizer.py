@@ -11,14 +11,16 @@ def is_clash_yaml(s):
   return isinstance(d,dict) and isinstance(d.get("proxies"),list)
  except Exception:return False
 def decode(b):
- if len(b)>8*1024*1024: raise ValueError("too large")
  s=b.decode("utf-8-sig","replace").strip()
- if s.startswith(("proxies:","---")) or is_clash_yaml(s): return s
- try:
-  d=base64.b64decode(re.sub(r"\s+","",s),validate=True).decode("utf-8-sig").strip()
-  if d and ("://" in d or d.startswith(("proxies:","---")) or is_clash_yaml(d)): return d
- except Exception: pass
+ for _ in range(3):
+  if s.startswith(("proxies:","---")) or "://" in s or is_clash_yaml(s): return s
+  try:
+   d=base64.b64decode(re.sub(r"\\s+","",s),validate=True).decode("utf-8-sig").strip()
+   if not d or d==s: break
+   s=d
+  except Exception: break
  return s
+
 def source(s):
  if s.startswith(("http://","https://")):
   r=requests.get(s,timeout=20,headers={"User-Agent":"cf001-subscription-optimizer"}); r.raise_for_status(); return decode(r.content)

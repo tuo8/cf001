@@ -37,4 +37,9 @@ class Tests(unittest.TestCase):
   self.assertEqual(len(m.parse(raw)),1)
   self.assertEqual(len(m.parse(m.decode(base64.b64encode(raw.encode())))),1)
 
+ def test_nested_base64_subscription(self):
+  raw="trojan://secret@example.com:443#Singapore"
+  nested=base64.b64encode(base64.b64encode(raw.encode()))
+  self.assertIn("trojan://",m.decode(nested))
+
 if __name__=="__main__":unittest.main()
