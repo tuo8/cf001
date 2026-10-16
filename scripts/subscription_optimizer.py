@@ -258,13 +258,22 @@ def probe(p,binary,folder):
    try:proc.wait(timeout=2)
    except subprocess.TimeoutExpired:proc.kill()
 def main():
- a=argparse.ArgumentParser();a.add_argument("--input",default=os.getenv("SUBSCRIPTION_URL",""));a.add_argument("--output",default="subscription/clash-mi.yaml");a.add_argument("--region",default=os.getenv("REGION_FILTER",""));a.add_argument("--name-filter",default=os.getenv("NODE_NAME_FILTER",""));a.add_argument("--server-filter",default=os.getenv("NODE_SERVER_FILTER",""));a.add_argument("--sort",choices=["balanced","latency","speed"],default=os.getenv("SORT_BY","balanced"));a.add_argument("--top",type=int,default=int(os.getenv("TOP_N","30")));a.add_argument("--parse-only",action="store_true");x=a.parse_args()
+ a=argparse.ArgumentParser();a.add_argument("--input",default=os.getenv("SUBSCRIPTION_URL",""));a.add_argument("--output",default="subscription/clash-mi.yaml");a.add_argument("--region",default=os.getenv("REGION_FILTER",""));a.add_argument("--name-filter",default=os.getenv("NODE_NAME_FILTER",""));a.add_argument("--server-filter",default=os.getenv("NODE_SERVER_FILTER",""));a.add_argument("--inventory-only",action="store_true",help="print safe node inventory without testing or writing credentials");a.add_argument("--sort",choices=["balanced","latency","speed"],default=os.getenv("SORT_BY","balanced"));a.add_argument("--top",type=int,default=int(os.getenv("TOP_N","30")));a.add_argument("--parse-only",action="store_true");x=a.parse_args()
  if not x.input:print("缺少 SUBSCRIPTION_URL",file=sys.stderr);return 2
  try:nodes=load_nodes(x.input)
  except Exception as e:print("订阅读取失败："+type(e).__name__,file=sys.stderr);return 2
  print(f"订阅源数: {len(source_items(x.input))}; 解析节点数: {len(nodes)}")
  clean=clean_nodes(nodes)
  print(f"去重后节点数: {len(clean)}")
+ if x.inventory_only:
+  needle=x.server_filter.strip().casefold()
+  print("节点清单（仅名称、服务器地址、端口；不含凭据）:")
+  for i,p in enumerate(clean,1):
+   server=str(p.get("server", ""))
+   try: direct_match = bool(needle) and server.casefold() == needle
+   except Exception: direct_match = False
+   print(f"{i:02d}\t{str(p.get('name', 'proxy'))[:100]}\t{server}\t{p.get('port', '')}\t直接匹配目标IP={'是' if direct_match else '否'}")
+  return 0
  if x.name_filter.strip():
   needle=x.name_filter.strip().casefold()
   before=len(clean)

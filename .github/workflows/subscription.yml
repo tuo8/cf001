@@ -24,6 +24,11 @@ on:
         description: 可选，按服务器 IP/域名精确筛选，例如 5.161.19.165
         required: false
         default: ''
+      inventory_only:
+        description: 仅输出节点名称、服务器地址和端口，不测速、不生成配置
+        type: boolean
+        required: false
+        default: false
   schedule:
     - cron: '23 */6 * * *'
 permissions:
@@ -62,12 +67,17 @@ jobs:
           REGION_FILTER: ${{ github.event.inputs.region }}
           NODE_NAME_FILTER: ${{ github.event.inputs.node_filter }}
           NODE_SERVER_FILTER: ${{ github.event.inputs.server_filter }}
+          NODE_INVENTORY_ONLY: ${{ github.event.inputs.inventory_only }}
           SORT_BY: ${{ github.event.inputs.sort || 'balanced' }}
           TOP_N: ${{ vars.SUBSCRIPTION_TOP_N || '30' }}
           DOWNLOAD_TEST_URL: ${{ vars.DOWNLOAD_TEST_URL || 'https://speed.cloudflare.com/__down?bytes=1000000' }}
         run: |
           set -euo pipefail
           test -n "$SUBSCRIPTION_URL" || { echo "::error::请设置对应的 TEST_SUBSCRIPTION_URL 或 SUBSCRIPTION_URL secret"; exit 2; }
+          if [[ "${NODE_INVENTORY_ONLY:-false}" == "true" ]]; then
+            python scripts/subscription_optimizer.py --inventory-only --output "$RUNNER_TEMP/clash-mi.yaml"
+            exit 0
+          fi
           python scripts/subscription_optimizer.py --output "$RUNNER_TEMP/clash-mi.yaml"
           python - "$RUNNER_TEMP/clash-mi.yaml" <<'PY'
           import sys,yaml
