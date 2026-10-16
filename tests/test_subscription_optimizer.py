@@ -1,4 +1,5 @@
 import base64,importlib.util,unittest
+from unittest.mock import patch
 from pathlib import Path
 spec=importlib.util.spec_from_file_location("opt",Path(__file__).parents[1]/"scripts"/"subscription_optimizer.py")
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
@@ -13,14 +14,14 @@ class Tests(unittest.TestCase):
   s="trojan://secret@example.com:443#Singapore";self.assertIn("trojan://",m.decode(base64.b64encode(s.encode())))
 
  def test_source_items_multiple_lines(self):
-  self.assertEqual(m.source_items("https://one.example/sub\\n\\n# comment\\nhttps://two.example/sub\\n"),["https://one.example/sub","https://two.example/sub"])
+  self.assertEqual(m.source_items("https://one.example/sub\n\n# comment\nhttps://two.example/sub\n"),["https://one.example/sub","https://two.example/sub"])
  def test_load_multiple_subscriptions_and_deduplicate(self):
-  a=b"proxies:\\n  - name: Singapore A\\n    type: ss\\n    server: one.example\\n    port: 443\\n    cipher: aes-128-gcm\\n    password: pass\\n"
-  b=b"proxies:\\n  - name: Singapore duplicate\\n    type: ss\\n    server: one.example\\n    port: 443\\n    cipher: aes-128-gcm\\n    password: pass\\n  - name: Tokyo B\\n    type: trojan\\n    server: two.example\\n    port: 443\\n    password: pass2\\n"
+  a=b"proxies:\n  - name: Singapore A\n    type: ss\n    server: one.example\n    port: 443\n    cipher: aes-128-gcm\n    password: pass\n"
+  b=b"proxies:\n  - name: Singapore duplicate\n    type: ss\n    server: one.example\n    port: 443\n    cipher: aes-128-gcm\n    password: pass\n  - name: Tokyo B\n    type: trojan\n    server: two.example\n    port: 443\n    password: pass2\n"
   class Response:
    def __init__(self,content): self.content=content
    def raise_for_status(self): pass
-  with patch.object(m.requests,"get",side_effect=[Response(a),Response(b)]) as get: nodes=m.load_nodes("https://one.example/sub\\nhttps://two.example/sub")
+  with patch.object(m.requests,"get",side_effect=[Response(a),Response(b)]) as get: nodes=m.load_nodes("https://one.example/sub\nhttps://two.example/sub")
   self.assertEqual(get.call_count,2);self.assertEqual(len(nodes),3)
   clean=m.clean_nodes(nodes);self.assertEqual(len(clean),2);self.assertEqual(clean[0]["name"],"Singapore A")
  def test_single_subscription_still_supported(self):
