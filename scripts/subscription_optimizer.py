@@ -15,13 +15,13 @@ def decode(b):
  for _ in range(3):
   if s.startswith(("proxies:","---")) or "://" in s or is_clash_yaml(s): return s
   lines=[line.strip() for line in s.splitlines() if line.strip() and not line.lstrip().startswith(("#","//"))]
-  candidates=[re.sub(r"\\s+","",s),"".join(line for line in lines if re.fullmatch(r"[A-Za-z0-9+/=]+",line))]
+  candidates=[re.sub(r"\s+","",s),"".join(line for line in lines if re.fullmatch(r"[A-Za-z0-9+/=]+",line))]
   decoded=None
   for candidate in candidates:
    if not candidate: continue
    try:
     d=base64.b64decode(candidate,validate=True).decode("utf-8-sig").strip()
-    if d and d!=s and ("://" in d or is_clash_yaml(d) or re.fullmatch(r"[A-Za-z0-9+/=\\s]+",d)):
+    if d and d!=s and ("://" in d or is_clash_yaml(d) or re.fullmatch(r"[A-Za-z0-9+/=\s]+",d)):
      decoded=d;break
    except Exception: pass
   if decoded is None: break
@@ -59,7 +59,7 @@ def endpoint_nodes(text,template):
  for line in text.splitlines():
   line=line.strip()
   if not line or line.startswith(("#","//")):continue
-  match=re.fullmatch(r"(?P<host>[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?):(?P<port>\\d{1,5})(?:\\s*#(?P<remark>.*))?",line)
+  match=re.fullmatch(r"(?P<host>[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?):(?P<port>\d{1,5})(?:\s*#(?P<remark>.*))?",line)
   if not match:continue
   port=int(match.group("port"))
   if not 1<=port<=65535:continue
@@ -91,7 +91,7 @@ def load_nodes(value):
     if template_text.strip() and template is None:template=parse_proxy_template(template_text)
     candidates=endpoint_nodes(text,template)
     endpoint_groups.append(candidates)
-    count=sum(1 for line in rows if re.fullmatch(r"(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?):\\d{1,5}(?:\\s*#.*)?",line))
+    count=sum(1 for line in rows if re.fullmatch(r"(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?):\d{1,5}(?:\s*#.*)?",line))
     print(f"订阅源#{index}: 格式=endpoint_list_not_proxy_subscription，候选地址数={count}，模板生成节点数={len(candidates)}")
     continue
    if stripped.startswith("<"):kind="html_or_xml"
@@ -104,9 +104,9 @@ def load_nodes(value):
      obj=yaml.safe_load(text)
      if isinstance(obj,dict):kind="yaml_mapping_without_proxies"
      elif isinstance(obj,list):kind="yaml_list_without_recognized_nodes"
-     elif re.fullmatch(r"[A-Za-z0-9+/=\\s]+",text):kind="base64_or_encoded_text"
+     elif re.fullmatch(r"[A-Za-z0-9+/=\s]+",text):kind="base64_or_encoded_text"
      else:kind="unrecognized_text"
-    except Exception:kind="base64_or_encoded_text" if re.fullmatch(r"[A-Za-z0-9+/=\\s]+",text) else "unrecognized_text"
+    except Exception:kind="base64_or_encoded_text" if re.fullmatch(r"[A-Za-z0-9+/=\s]+",text) else "unrecognized_text"
    print(f"订阅源#{index}: 解码字符数={len(text)}，格式={kind}，首字符码点={ord(stripped[0]) if stripped else 0}，节点数=0")
   else:
    print(f"订阅源#{index}: 解码字符数={len(text)}，节点数={len(parsed)}")
