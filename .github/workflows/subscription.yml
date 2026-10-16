@@ -27,14 +27,19 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install -r requirements-subscription.txt
+      - name: Install dependencies
+        run: pip install -r requirements-subscription.txt
+      - name: Run parser unit tests
+        run: python -m unittest discover -s tests -v
       - name: Install Mihomo
         shell: bash
         run: |
           set -euo pipefail
           V="$(curl -fsSL https://api.github.com/repos/MetaCubeX/mihomo/releases/latest | python -c 'import json,sys;print(json.load(sys.stdin)["tag_name"])')"
           U="$(curl -fsSL "https://api.github.com/repos/MetaCubeX/mihomo/releases/tags/$V" | python -c 'import json,sys;d=json.load(sys.stdin);print(next((a["browser_download_url"] for a in d["assets"] if "linux-amd64-compatible" in a["name"] and a["name"].endswith(".gz")),""))')"
-          test -n "$U"; curl -fsSL "$U" | gunzip > "$RUNNER_TEMP/mihomo"; chmod +x "$RUNNER_TEMP/mihomo"
+          test -n "$U"
+          curl -fsSL "$U" | gunzip > "$RUNNER_TEMP/mihomo"
+          chmod +x "$RUNNER_TEMP/mihomo"
           echo "MIHOMO_PATH=$RUNNER_TEMP/mihomo" >> "$GITHUB_ENV"
       - name: Optimize and validate
         env:
@@ -55,9 +60,14 @@ jobs:
           assert all(n in names for g in d['proxy-groups'] for n in g.get('proxies',[]))
           print('Clash YAML structure valid:',len(names),'proxies')
           PY
-      - uses: actions/upload-artifact@v4
+      - name: Upload artifact only for private repositories
+        if: ${{ github.event.repository.private == true }}
+        uses: actions/upload-artifact@v4
         with:
           name: clash-mi-subscription-${{ github.run_number }}
           path: ${{ runner.temp }}/clash-mi.yaml
           if-no-files-found: error
           retention-days: 1
+      - name: Warn for public repository
+        if: ${{ github.event.repository.private != true }}
+        run: echo "::warning::仓库是公开的，为避免泄露代理凭据，已跳过上传配置 artifact。请将仓库设为 Private 后重新运行。"
