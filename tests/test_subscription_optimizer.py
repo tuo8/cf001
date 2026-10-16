@@ -25,12 +25,12 @@ class Tests(unittest.TestCase):
   self.assertEqual(get.call_count,2);self.assertEqual(len(nodes),3)
   clean=m.clean_nodes(nodes);self.assertEqual(len(clean),2);self.assertEqual(clean[0]["name"],"Singapore A")
  def test_detect_endpoint_list_not_proxy_subscription(self):
-  sample="162.159.198.1:443#VPS789 TOP20\\ncfyx.aliyun.20237737.xyz:443#VPS789优选\\n"
+  sample="162.159.198.1:443#VPS789 TOP20\ncfyx.aliyun.20237737.xyz:443#VPS789优选\n"
   self.assertTrue(m.looks_like_endpoint_list(sample))
-  self.assertFalse(m.looks_like_endpoint_list("trojan://secret@example.com:443#Singapore\\n"))
+  self.assertFalse(m.looks_like_endpoint_list("trojan://secret@example.com:443#Singapore\n"))
  def test_endpoint_template_builds_proxy_nodes(self):
-  template='name: Base\\ntype: trojan\\nserver: original.example\\nport: 443\\npassword: secret\\ntls: true\\nservername: service.example\\n'
-  sample="162.159.198.1:443#candidate one\\ncfyx.aliyun.20237737.xyz:8443#candidate two\\n"
+  template='name: Base\ntype: trojan\nserver: original.example\nport: 443\npassword: secret\ntls: true\nservername: service.example\n'
+  sample="162.159.198.1:443#candidate one\ncfyx.aliyun.20237737.xyz:8443#candidate two\n"
   with patch.dict("os.environ",{"CLASH_PROXY_TEMPLATE":template,"ENDPOINT_MAX_CANDIDATES":"1"}):
    class Response:
     content=sample.encode()
