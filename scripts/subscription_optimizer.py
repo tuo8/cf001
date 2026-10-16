@@ -53,8 +53,15 @@ def load_nodes(value):
    elif is_clash_yaml(text):kind="clash_yaml"
    elif "://" in text:kind="unsupported_uri_or_format"
    elif not stripped:kind="empty_response"
-   else:kind="unrecognized_text"
-   print(f"订阅源#{index}: 解码字符数={len(text)}，格式={kind}，节点数=0")
+   else:
+    try:
+     obj=yaml.safe_load(text)
+     if isinstance(obj,dict):kind="yaml_mapping_without_proxies"
+     elif isinstance(obj,list):kind="yaml_list_without_recognized_nodes"
+     elif re.fullmatch(r"[A-Za-z0-9+/=\\s]+",text):kind="base64_or_encoded_text"
+     else:kind="unrecognized_text"
+    except Exception:kind="base64_or_encoded_text" if re.fullmatch(r"[A-Za-z0-9+/=\\s]+",text) else "unrecognized_text"
+   print(f"订阅源#{index}: 解码字符数={len(text)}，格式={kind}，首字符码点={ord(stripped[0]) if stripped else 0}，节点数=0")
   else:
    print(f"订阅源#{index}: 解码字符数={len(text)}，节点数={len(parsed)}")
   nodes.extend(parsed)
