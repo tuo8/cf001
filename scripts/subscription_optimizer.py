@@ -297,7 +297,7 @@ def endpoint_connectivity(value):
   else:
    print(f"订阅源#{index}: 未识别为代理节点或 host:port 清单");continue
   candidates.extend(pair for pair in group if pair not in candidates)
- limit=max(1,int(os.getenv("ENDPOINT_DIAGNOSTIC_MAX","500")))
+ limit=max(1,int(os.getenv("ENDPOINT_DIAGNOSTIC_MAX","1000")))
  if len(candidates)>limit:
   print(f"候选地址总数={len(candidates)}；本轮按上限测试={limit}");candidates=candidates[:limit]
  else:print(f"候选地址总数={len(candidates)}；本轮全部测试")
@@ -309,8 +309,7 @@ def endpoint_connectivity(value):
  opened=[pair for pair,ok in zip(candidates,results) if ok]
  print(f"TCP 可连接={len(opened)}；TCP 未连接={len(candidates)-len(opened)}")
  print("可连接地址（TCP 结果不代表代理认证或实际转发可用）:")
- for host,port in opened[:100]:print(f"{host}:{port}")
- if len(opened)>100:print(f"其余可连接地址未显示={len(opened)-100}")
+ for host,port in opened:print(f"{host}:{port}")
  return 0
 
 def main():
