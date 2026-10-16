@@ -20,6 +20,10 @@ on:
         description: 可选，按节点名称包含关键词筛选，例如 US9
         required: false
         default: ''
+      server_filter:
+        description: 可选，按服务器 IP/域名精确筛选，例如 5.161.19.165
+        required: false
+        default: ''
   schedule:
     - cron: '23 */6 * * *'
 permissions:
@@ -57,6 +61,7 @@ jobs:
           ENDPOINT_MAX_CANDIDATES: ${{ vars.ENDPOINT_MAX_CANDIDATES || '60' }}
           REGION_FILTER: ${{ github.event.inputs.region }}
           NODE_NAME_FILTER: ${{ github.event.inputs.node_filter }}
+          NODE_SERVER_FILTER: ${{ github.event.inputs.server_filter }}
           SORT_BY: ${{ github.event.inputs.sort || 'balanced' }}
           TOP_N: ${{ vars.SUBSCRIPTION_TOP_N || '30' }}
           DOWNLOAD_TEST_URL: ${{ vars.DOWNLOAD_TEST_URL || 'https://speed.cloudflare.com/__down?bytes=1000000' }}
