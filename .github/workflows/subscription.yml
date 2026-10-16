@@ -15,7 +15,7 @@ on:
         description: 测试哪个订阅源
         type: choice
         options: [original, test]
-        default: test
+        default: original
   schedule:
     - cron: '23 */6 * * *'
 permissions:
