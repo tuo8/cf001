@@ -1,0 +1,55 @@
+
+name: Hourly Cloudflare IP Check
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 * * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hourly-cfst
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare directories
+        run: |
+          mkdir -p dist public scripts config
+
+      - name: Install CFST
+        run: |
+          chmod +x install.sh cfst-region.sh
+          ./install.sh
+
+      - name: Run existing selector
+        run: |
+          ./cfst-region.sh
+          echo "Inspect the script's actual output path before enabling publication."
+
+      - name: Validate result
+        env:
+          RESULT_FILE: dist/alive.txt
+        run: python3 scripts/validate_results.py
+
+      - name: Publish result
+        env:
+          RESULT_FILE: dist/alive.txt
+          PUBLISH_FILE: public/alive.txt
+        run: python3 scripts/publish_results.py
+
+      - name: Upload result
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloudflare-ip-results
+          path: public/alive.txt
+          retention-days: 7
