@@ -217,28 +217,46 @@ def region(p):
 def probe(p,binary,folder):
  cfg={"mixed-port":17890,"mode":"rule","log-level":"error","proxies":[p],"proxy-groups":[{"name":"TEST","type":"select","proxies":[p["name"]]}],"rules":["MATCH,TEST"]}
  f=folder/"p.yaml";f.write_text(yaml.safe_dump(cfg,allow_unicode=True,sort_keys=False))
- proc=subprocess.Popen([binary,"-f",str(f)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+ proc=subprocess.Popen([binary,"-f",str(f)],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+ stage="mihomo_start"
  try:
   end=time.time()+8
   while time.time()<end:
+   if proc.poll() is not None:
+    out,err=proc.communicate(timeout=1)
+    lines=(err or out or "").strip().splitlines()
+    detail=lines[-1][:180] if lines else "进程提前退出且没有错误文本"
+    print(f"节点测试失败：type={p.get('type','unknown')}；阶段={stage}；原因={detail}")
+    return None
    try:
     with socket.create_connection(("127.0.0.1",17890),timeout=.2):break
    except OSError:time.sleep(.1)
-  else:return None
-  px={"http":"http://127.0.0.1:17890","https":"http://127.0.0.1:17890"};t=time.monotonic()
+  else:
+   print(f"节点测试失败：type={p.get('type','unknown')}；阶段=mixed_port_start_timeout")
+   return None
+  px={"http":"http://127.0.0.1:17890","https":"http://127.0.0.1:17890"};t=time.monotonic();stage="latency_request"
   r=requests.get("https://www.gstatic.com/generate_204",proxies=px,timeout=8);lat=(time.monotonic()-t)*1000
-  if r.status_code not in (200,204,301,302):return None
-  t=time.monotonic();r=requests.get(os.getenv("DOWNLOAD_TEST_URL","https://speed.cloudflare.com/__down?bytes=1000000"),proxies=px,timeout=12,stream=True);size=0
+  if r.status_code not in (200,204,301,302):
+   print(f"节点测试失败：type={p.get('type','unknown')}；阶段=latency_http；状态码={r.status_code}")
+   return None
+  t=time.monotonic();stage="download_request"
+  r=requests.get(os.getenv("DOWNLOAD_TEST_URL","https://speed.cloudflare.com/__down?bytes=1000000"),proxies=px,timeout=12,stream=True);size=0
   for chunk in r.iter_content(65536):
    size+=len(chunk)
    if size>=250000:break
   r.close()
-  return (lat,size*8/max(time.monotonic()-t,.001)/1e6) if size>=32768 else None
- except Exception:return None
+  if size<32768:
+   print(f"节点测试失败：type={p.get('type','unknown')}；阶段=download_too_small；字节数={size}")
+   return None
+  return (lat,size*8/max(time.monotonic()-t,.001)/1e6)
+ except Exception as e:
+  print(f"节点测试失败：type={p.get('type','unknown')}；阶段={stage}；异常={type(e).__name__}")
+  return None
  finally:
-  proc.terminate()
-  try:proc.wait(timeout=2)
-  except subprocess.TimeoutExpired:proc.kill()
+  if proc.poll() is None:
+   proc.terminate()
+   try:proc.wait(timeout=2)
+   except subprocess.TimeoutExpired:proc.kill()
 def main():
  a=argparse.ArgumentParser();a.add_argument("--input",default=os.getenv("SUBSCRIPTION_URL",""));a.add_argument("--output",default="subscription/clash-mi.yaml");a.add_argument("--region",default=os.getenv("REGION_FILTER",""));a.add_argument("--sort",choices=["balanced","latency","speed"],default=os.getenv("SORT_BY","balanced"));a.add_argument("--top",type=int,default=int(os.getenv("TOP_N","30")));a.add_argument("--parse-only",action="store_true");x=a.parse_args()
  if not x.input:print("缺少 SUBSCRIPTION_URL",file=sys.stderr);return 2
