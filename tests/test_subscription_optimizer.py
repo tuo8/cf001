@@ -31,4 +31,10 @@ class Tests(unittest.TestCase):
   with patch.object(m.requests,"get",return_value=Response()): nodes=m.load_nodes("https://one.example/sub")
   self.assertEqual(len(nodes),1);self.assertEqual(nodes[0]["type"],"trojan")
 
+
+ def test_full_clash_yaml_with_top_level_settings(self):
+  raw="mixed-port: 7890\\nmode: rule\\nproxies:\\n  - name: 'Singapore 01'\\n    type: ss\\n    server: example.com\\n    port: 443\\n    cipher: aes-128-gcm\\n    password: secret\\n"
+  self.assertEqual(len(m.parse(raw)),1)
+  self.assertEqual(len(m.parse(m.decode(base64.b64encode(raw.encode())))),1)
+
 if __name__=="__main__":unittest.main()

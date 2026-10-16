@@ -5,13 +5,18 @@ from pathlib import Path
 from urllib.parse import urlsplit,parse_qs,unquote
 import requests,yaml
 
+def is_clash_yaml(s):
+ try:
+  d=yaml.safe_load(s)
+  return isinstance(d,dict) and isinstance(d.get("proxies"),list)
+ except Exception:return False
 def decode(b):
  if len(b)>8*1024*1024: raise ValueError("too large")
  s=b.decode("utf-8-sig","replace").strip()
- if s.startswith(("proxies:","---")): return s
+ if s.startswith(("proxies:","---")) or is_clash_yaml(s): return s
  try:
   d=base64.b64decode(re.sub(r"\s+","",s),validate=True).decode("utf-8-sig").strip()
-  if d and ("://" in d or d.startswith(("proxies:","---"))): return d
+  if d and ("://" in d or d.startswith(("proxies:","---")) or is_clash_yaml(d)): return d
  except Exception: pass
  return s
 def source(s):
@@ -73,7 +78,7 @@ def uri(s):
   return p
  except Exception:return None
 def parse(s):
- if s.lstrip().startswith(("proxies:","---")):
+ if s.lstrip().startswith(("proxies:","---")) or is_clash_yaml(s):
   try:
    d=yaml.safe_load(s)
    if isinstance(d,dict) and isinstance(d.get("proxies"),list):return [p for p in d["proxies"] if isinstance(p,dict) and p.get("type") and p.get("server") and p.get("port")]
