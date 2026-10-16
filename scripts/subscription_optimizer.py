@@ -34,6 +34,17 @@ def source(s):
  p=Path(s)
  if p.is_file(): return decode(p.read_bytes())
  raise ValueError("invalid source")
+def looks_like_endpoint_list(s):
+ """Detect IP/domain:port candidate lists; these are not proxy subscriptions."""
+ rows=[line.strip() for line in s.splitlines() if line.strip() and not line.lstrip().startswith(("#","//"))]
+ if not rows:return False
+ matched=0
+ for line in rows:
+  candidate=line.split("#",1)[0].strip()
+  if re.fullmatch(r"(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?):\d{1,5}",candidate):
+   matched+=1
+ return matched >= 1 and matched / len(rows) >= 0.6
+
 def source_items(value):
  items=[line.strip() for line in value.splitlines() if line.strip() and not line.strip().startswith("#")]
  if not items: raise ValueError("empty source list")
@@ -48,6 +59,11 @@ def load_nodes(value):
   parsed=parse(text)
   if not parsed:
    stripped=text.lstrip()
+   if looks_like_endpoint_list(text):
+    rows=[line.strip() for line in text.splitlines() if line.strip() and not line.lstrip().startswith(("#","//"))]
+    count=sum(1 for line in rows if re.fullmatch(r"(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?):\d{1,5}(?:#.*)?",line))
+    print(f"订阅源#{index}: 格式=endpoint_list_not_proxy_subscription，候选地址数={count}，节点数=0；该列表只有域名/IP和端口，必须配合已有 Clash 节点模板，不能单独测速生成代理节点")
+    continue
    if stripped.startswith("<"):kind="html_or_xml"
    elif stripped.startswith(("{","[")):kind="json_or_yaml_without_proxies"
    elif is_clash_yaml(text):kind="clash_yaml"

@@ -24,6 +24,10 @@ class Tests(unittest.TestCase):
   with patch.object(m.requests,"get",side_effect=[Response(a),Response(b)]) as get: nodes=m.load_nodes("https://one.example/sub\nhttps://two.example/sub")
   self.assertEqual(get.call_count,2);self.assertEqual(len(nodes),3)
   clean=m.clean_nodes(nodes);self.assertEqual(len(clean),2);self.assertEqual(clean[0]["name"],"Singapore A")
+ def test_detect_endpoint_list_not_proxy_subscription(self):
+  sample="162.159.198.1:443#VPS789 TOP20\\ncfyx.aliyun.20237737.xyz:443#VPS789优选\\n"
+  self.assertTrue(m.looks_like_endpoint_list(sample))
+  self.assertFalse(m.looks_like_endpoint_list("trojan://secret@example.com:443#Singapore\\n"))
  def test_single_subscription_still_supported(self):
   class Response:
    content=b"trojan://secret@example.com:443#Singapore"
