@@ -223,6 +223,9 @@ def format_latency(value):
  return "NA" if value is None else f"{value:.0f} ms"
 
 def probe(p,binary,folder):
+ # Every concurrent probe needs its own config directory; sharing p.yaml
+ # would cause Mihomo processes to race and test the wrong node.
+ folder.mkdir(parents=True,exist_ok=True)
  # Use an ephemeral port so a stale listener or a runner-side port collision
  # cannot make a node appear ready before this Mihomo process is listening.
  with socket.socket() as sock:
@@ -403,10 +406,22 @@ def main():
  else:
   binary=shutil.which(os.getenv("MIHOMO_PATH","mihomo"))
   if not binary:print("找不到 Mihomo；不会把未测速节点标记为可用",file=sys.stderr);return 4
+  workers=max(1,min(32,int(os.getenv("PROBE_WORKERS","24"))))
+  print(f"并发测速工作线程: {workers}")
   with tempfile.TemporaryDirectory() as d:
-   for p in clean:
-    v=probe(p,binary,Path(d))
-    if v:res.append((p,*v))
+   with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+    futures={pool.submit(probe,p,binary,Path(d)/f"node-{i}"):(i,p) for i,p in enumerate(clean)}
+    completed=0
+    for future in concurrent.futures.as_completed(futures):
+     _,p=futures[future]
+     try:v=future.result()
+     except Exception as e:
+      print(f"节点测试异常：type={p.get('type','unknown')}；异常={type(e).__name__}")
+      v=None
+     if v:res.append((p,*v))
+     completed+=1
+     if completed%50==0 or completed==len(clean):
+      print(f"测速进度: {completed}/{len(clean)}；通过={len(res)}")
  if x.sort=="latency":res.sort(key=lambda z:(z[1] is None,z[1] or 1e9))
  elif x.sort=="speed":res.sort(key=lambda z:(z[2] is None,-(z[2] or 0)))
  else:res.sort(key=lambda z:(z[1] is None,z[1] or 1e9,-(z[2] or 0)))
