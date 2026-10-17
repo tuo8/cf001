@@ -4,26 +4,18 @@
  * Cloudflare setup:
  * - Bind the KV namespace as SUBSCRIPTIONS.
  * - Add Worker secret SUBSCRIPTION_TOKEN with a long random value.
- * - Request URL: https://<worker>.<subdomain>.workers.dev/sub/<same-token>
+ * - Clash Mi URL: https://<domain>/sub/<same-token>
+ * - v2rayN URL: https://<domain>/v2rayn/<same-token>
  */
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const parts = url.pathname.split("/").filter(Boolean);
     const expected = env.SUBSCRIPTION_TOKEN;
-
-    // Return 404 rather than disclose whether the endpoint or secret exists.
-    if (
-      request.method !== "GET" ||
-      parts.length !== 2 ||
-      parts[0] !== "sub" ||
-      !expected ||
-      parts[1] !== expected
-    ) {
-      return new Response("Not found", {
-        status: 404,
-        headers: { "Cache-Control": "no-store" },
-      });
+    const keys = { sub: "clash-mi.yaml", v2rayn: "v2rayn.txt" };
+    const key = parts.length === 2 && parts[1] === expected ? keys[parts[0]] : null;
+    if (request.method !== "GET" || !expected || !key) {
+      return new Response("Not found", { status: 404, headers: { "Cache-Control": "no-store" } });
     }
 
     if (!env.SUBSCRIPTIONS) {
@@ -33,7 +25,7 @@ export default {
       });
     }
 
-    const yaml = await env.SUBSCRIPTIONS.get("clash-mi.yaml");
+    const yaml = await env.SUBSCRIPTIONS.get(key);
     if (!yaml) {
       return new Response("Subscription has not been published yet", {
         status: 503,
@@ -44,7 +36,7 @@ export default {
     return new Response(yaml, {
       status: 200,
       headers: {
-        "Content-Type": "text/yaml; charset=utf-8",
+        "Content-Type": key === "clash-mi.yaml" ? "text/yaml; charset=utf-8" : "text/plain; charset=utf-8",
         "Cache-Control": "no-store, max-age=0",
         "X-Content-Type-Options": "nosniff",
       },

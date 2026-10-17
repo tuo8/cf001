@@ -13,6 +13,25 @@ class Tests(unittest.TestCase):
  def test_configured_urls_uses_defaults_when_unset(self):
   with patch.dict("os.environ",{},clear=True):
    self.assertEqual(m.configured_urls("LATENCY_TEST_URLS",["https://a.example/ping"]),["https://a.example/ping"])
+ def test_v2rayn_ss_uri(self):
+  p={"name":"Singapore","type":"ss","server":"example.com","port":443,"cipher":"aes-256-gcm","password":"secret"}
+  uri=m.proxy_to_share_uri(p)
+  self.assertTrue(uri.startswith("ss://"))
+  self.assertIn("#Singapore",uri)
+ def test_v2rayn_vless_reality_uri(self):
+  p={"name":"Tokyo","type":"vless","server":"example.com","port":443,"uuid":"test-id","tls":True,"servername":"www.example.com","reality-opts":{"public-key":"pub","short-id":"abcd"},"network":"tcp"}
+  uri=m.proxy_to_share_uri(p)
+  self.assertIn("vless://test-id@example.com:443?",uri)
+  self.assertIn("security=reality",uri)
+  self.assertIn("pbk=pub",uri)
+ def test_v2rayn_base64_subscription(self):
+  import tempfile
+  p={"name":"Singapore","type":"trojan","server":"example.com","port":443,"password":"secret","tls":True}
+  with tempfile.TemporaryDirectory() as d:
+   path=Path(d)/"v2rayn.txt"
+   self.assertEqual(m.write_v2rayn_subscription([(p,20,5.0)],path),1)
+   decoded=base64.b64decode(path.read_text().strip()).decode()
+   self.assertIn("trojan://secret@example.com:443",decoded)
  def test_ss(self):
   p=m.uri("ss://YWVzLTI1Ni1nY206cGFzcw==@example.com:443#Singapore");self.assertEqual(p["cipher"],"aes-256-gcm");self.assertEqual(p["password"],"pass")
  def test_trojan(self):

@@ -366,8 +366,76 @@ def endpoint_connectivity(value):
  for (host,port),ok in ip_results:print(f"{host}:{port} TCP={'OPEN' if ok else 'CLOSED'}")
  return 0
 
+
+def proxy_to_share_uri(p):
+ from urllib.parse import quote, urlencode
+ kind=str(p.get("type","")).lower(); name=quote(str(p.get("name") or p.get("server","proxy")),safe="")
+ host=str(p.get("server","")); port=int(p.get("port",0))
+ if not host or not 1<=port<=65535:return None
+ def q(items): return urlencode([(k,str(v)) for k,v in items if v is not None and str(v)!=""],quote_via=quote,safe="/")
+ if kind=="ss":
+  method=str(p.get("cipher","")); password=str(p.get("password",""))
+  if not method or not password:return None
+  raw=f"{method}:{password}@{host}:{port}".encode()
+  return "ss://"+base64.urlsafe_b64encode(raw).decode().rstrip("=")+"#"+name
+ if kind=="vmess":
+  if not p.get("uuid"):return None
+  net=str(p.get("network","tcp")); ws=p.get("ws-opts") or {}; headers=ws.get("headers") or {}
+  obj={"v":"2","ps":str(p.get("name") or host),"add":host,"port":str(port),"id":str(p["uuid"]),"aid":str(p.get("alterId",0)),"scy":str(p.get("cipher","auto")),"net":net,"type":"none","host":str(headers.get("Host","")),"path":str(ws.get("path","")),"tls":"tls" if p.get("tls") else ""}
+  if p.get("servername"):obj["sni"]=str(p["servername"])
+  return "vmess://"+base64.b64encode(json.dumps(obj,separators=(",",":")).encode()).decode()
+ if kind in {"vless","trojan"}:
+  user=p.get("uuid") if kind=="vless" else p.get("password")
+  if not user:return None
+  params=[]; net=str(p.get("network","tcp"))
+  if net and net!="tcp":params.append(("type",net))
+  reality=p.get("reality-opts") if isinstance(p.get("reality-opts"),dict) else {}
+  if reality:params.append(("security","reality"))
+  elif p.get("tls"):params.append(("security","tls"))
+  if p.get("servername"):params.append(("sni",p["servername"]))
+  if p.get("client-fingerprint"):params.append(("fp",p["client-fingerprint"]))
+  if kind=="vless" and p.get("flow"):params.append(("flow",p["flow"]))
+  if reality.get("public-key"):params.append(("pbk",reality["public-key"]))
+  if reality.get("short-id"):params.append(("sid",reality["short-id"]))
+  if net=="ws":
+   ws=p.get("ws-opts") or {}; headers=ws.get("headers") or {}
+   if ws.get("path"):params.append(("path",ws["path"]))
+   if headers.get("Host"):params.append(("host",headers["Host"]))
+  if net=="grpc":
+   grpc=p.get("grpc-opts") or {}
+   if grpc.get("grpc-service-name"):params.append(("serviceName",grpc["grpc-service-name"]))
+  return f"{kind}://{quote(str(user),safe='')}@{host}:{port}?{q(params)}#{name}"
+ if kind=="hysteria2":
+  password=p.get("password") or p.get("auth")
+  if not password:return None
+  params=[]
+  if p.get("servername"):params.append(("sni",p["servername"]))
+  if p.get("skip-cert-verify"):params.append(("insecure","1"))
+  obfs=p.get("obfs")
+  if isinstance(obfs,dict) and obfs.get("type"):params.append(("obfs",obfs["type"]))
+  if isinstance(obfs,dict) and obfs.get("password"):params.append(("obfs-password",obfs["password"]))
+  return f"hysteria2://{quote(str(password),safe='')}@{host}:{port}?{q(params)}#{name}"
+ if kind in {"socks5","socks","http"}:
+  scheme="socks" if kind in {"socks5","socks"} else "http"; auth=""
+  if p.get("username"):auth=quote(str(p["username"]),safe="")+(":"+quote(str(p.get("password","")),safe="") if p.get("password") else "")+"@"
+  return f"{scheme}://{auth}{host}:{port}#{name}"
+ return None
+
+def write_v2rayn_subscription(results, output):
+ uris=[]; skipped={}
+ for p,*_ in results:
+  value=proxy_to_share_uri(p)
+  if value:uris.append(value)
+  else:
+   kind=str(p.get("type","unknown"));skipped[kind]=skipped.get(kind,0)+1
+ if not uris:raise ValueError("没有可转换为 v2rayN 分享链接的节点类型")
+ Path(output).parent.mkdir(parents=True,exist_ok=True)
+ Path(output).write_text(base64.b64encode(("\n".join(uris)+"\n").encode()).decode()+"\n",encoding="utf-8")
+ print(f"v2rayN 订阅已生成：可转换节点={len(uris)}；跳过不支持类型={sum(skipped.values())}")
+ return len(uris)
+
 def main():
- a=argparse.ArgumentParser();a.add_argument("--input",default=os.getenv("SUBSCRIPTION_URL",""));a.add_argument("--output",default="subscription/clash-mi.yaml");a.add_argument("--region",default=os.getenv("REGION_FILTER",""));a.add_argument("--name-filter",default=os.getenv("NODE_NAME_FILTER",""));a.add_argument("--server-filter",default=os.getenv("NODE_SERVER_FILTER",""));a.add_argument("--inventory-only",action="store_true",help="print safe node inventory without testing or writing credentials");a.add_argument("--endpoint-check-only",action="store_true",help="TCP-check subscription host:port endpoints without creating proxy configs");a.add_argument("--sort",choices=["balanced","latency","speed"],default=os.getenv("SORT_BY","balanced"));a.add_argument("--top",type=int,default=int(os.getenv("TOP_N","0")));a.add_argument("--parse-only",action="store_true");x=a.parse_args()
+ a=argparse.ArgumentParser();a.add_argument("--input",default=os.getenv("SUBSCRIPTION_URL",""));a.add_argument("--output",default="subscription/clash-mi.yaml");a.add_argument("--region",default=os.getenv("REGION_FILTER",""));a.add_argument("--name-filter",default=os.getenv("NODE_NAME_FILTER",""));a.add_argument("--server-filter",default=os.getenv("NODE_SERVER_FILTER",""));a.add_argument("--inventory-only",action="store_true",help="print safe node inventory without testing or writing credentials");a.add_argument("--endpoint-check-only",action="store_true",help="TCP-check subscription host:port endpoints without creating proxy configs");a.add_argument("--sort",choices=["balanced","latency","speed"],default=os.getenv("SORT_BY","balanced"));a.add_argument("--top",type=int,default=int(os.getenv("TOP_N","0")));a.add_argument("--parse-only",action="store_true");a.add_argument("--v2rayn-output",default=os.getenv("V2RAYN_OUTPUT",""));x=a.parse_args()
  if not x.input:print("缺少 SUBSCRIPTION_URL",file=sys.stderr);return 2
  if x.endpoint_check_only:return endpoint_connectivity(x.input)
  try:nodes=load_nodes(x.input)
@@ -431,6 +499,9 @@ def main():
  dest=Path(x.output);dest.parent.mkdir(parents=True,exist_ok=True);dest.write_text(yaml.safe_dump(doc,allow_unicode=True,sort_keys=False),encoding="utf-8")
  assert len(yaml.safe_load(dest.read_text())["proxies"])==len(res)
  print(f"已生成配置：{dest}；节点数={len(res)}；模式={'仅解析，未测速' if x.parse_only else '真实测速'}")
+ if x.v2rayn_output:
+  try: write_v2rayn_subscription(res,x.v2rayn_output)
+  except ValueError as e: print(str(e),file=sys.stderr);return 8
  if not x.parse_only:
   for p,lat,spd in res:print(f"{p['name'][:48]}\t{format_latency(lat)}\t{spd:.2f} Mbps")
  return 0

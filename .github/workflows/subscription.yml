@@ -66,7 +66,7 @@ jobs:
           echo "MIHOMO_PATH=$RUNNER_TEMP/mihomo" >> "$GITHUB_ENV"
       - name: Optimize and validate
         env:
-          SUBSCRIPTION_URL: ${{ github.event.inputs.subscription_source == 'test' && secrets.TEST_SUBSCRIPTION_URL || secrets.SUBSCRIPTION_URL }}
+          SUBSCRIPTION_URL: ${{ github.event_name == 'schedule' && secrets.TEST_SUBSCRIPTION_URL || (github.event.inputs.subscription_source == 'test' && secrets.TEST_SUBSCRIPTION_URL) || secrets.SUBSCRIPTION_URL }}
           CLASH_PROXY_TEMPLATE: ${{ secrets.CLASH_PROXY_TEMPLATE }}
           ENDPOINT_MAX_CANDIDATES: ${{ vars.ENDPOINT_MAX_CANDIDATES || '60' }}
           REGION_FILTER: ${{ github.event.inputs.region }}
@@ -91,7 +91,7 @@ jobs:
             python scripts/subscription_optimizer.py --inventory-only --output "$RUNNER_TEMP/clash-mi.yaml"
             exit 0
           fi
-          python scripts/subscription_optimizer.py --output "$RUNNER_TEMP/clash-mi.yaml"
+          python scripts/subscription_optimizer.py --output "$RUNNER_TEMP/clash-mi.yaml" --v2rayn-output "$RUNNER_TEMP/v2rayn.txt"
           python - "$RUNNER_TEMP/clash-mi.yaml" <<'PY'
           import sys,yaml
           d=yaml.safe_load(open(sys.argv[1],encoding='utf-8'))
@@ -100,6 +100,9 @@ jobs:
           assert all(n in names for g in d['proxy-groups'] for n in g.get('proxies',[]))
           print('Clash YAML structure valid:',len(names),'proxies')
           PY
+      - name: Validate v2rayN subscription output
+        if: ${{ success() && (github.event_name != 'workflow_dispatch' || (!inputs.inventory_only && !inputs.endpoint_check_only)) }}
+        run: test -s "$RUNNER_TEMP/v2rayn.txt"
       - name: Publish validated subscription to Cloudflare KV
         if: ${{ success() && (github.event_name != 'workflow_dispatch' || (!inputs.inventory_only && !inputs.endpoint_check_only)) }}
         env:
@@ -129,6 +132,24 @@ jobs:
               print("Cloudflare KV publish failed:", json.dumps(errors, ensure_ascii=False))
               raise SystemExit(1)
           print("Cloudflare KV publish succeeded.")
+          PY
+          v2response="$RUNNER_TEMP/cloudflare-kv-v2rayn-response.json"
+          curl --fail --silent --show-error \
+            --request PUT \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/values/v2rayn.txt" \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            --header "Content-Type: text/plain" \
+            --data-binary "@$RUNNER_TEMP/v2rayn.txt" \
+            --output "$v2response"
+          python - "$v2response" <<'PY'
+          import json,sys
+          with open(sys.argv[1], encoding="utf-8") as f:
+              result=json.load(f)
+          if not result.get("success"):
+              errors=result.get("errors") or []
+              print("Cloudflare KV v2rayN publish failed:", json.dumps(errors, ensure_ascii=False))
+              raise SystemExit(1)
+          print("Cloudflare KV v2rayN publish succeeded.")
           PY
       - name: Upload artifact only for private repositories
         if: ${{ github.event.repository.private == true }}
