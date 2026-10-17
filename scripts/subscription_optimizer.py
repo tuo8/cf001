@@ -249,11 +249,12 @@ def probe(p,binary,folder):
    "https://www.gstatic.com/generate_204",
    "https://www.google.com/generate_204",
   ])
-  lat=None;lat_errors=[]
+  lat=None;lat_errors=[];latency_deadline=time.monotonic()+12
   for url in latency_urls:
+   if time.monotonic()>=latency_deadline:break
    stage="latency_request";t=time.monotonic()
    try:
-    r=requests.get(url,proxies=px,timeout=(5,8))
+    r=requests.get(url,proxies=px,timeout=(3,4))
     elapsed=(time.monotonic()-t)*1000
     if r.status_code in (200,204,301,302):
      lat=elapsed;r.close();break
@@ -268,17 +269,18 @@ def probe(p,binary,folder):
    "https://speed.cloudflare.com/__down?bytes=250000",
    "https://proof.ovh.net/files/1Mb.dat",
   ])
-  speed=None;download_errors=[]
+  speed=None;download_errors=[];download_deadline=time.monotonic()+12
   for url in download_urls:
+   if time.monotonic()>=download_deadline:break
    stage="download_request";t=time.monotonic();size=0;r=None
    try:
-    r=requests.get(url,proxies=px,timeout=(5,15),stream=True)
+    r=requests.get(url,proxies=px,timeout=(3,4),stream=True)
     if r.status_code < 200 or r.status_code >= 400:
      download_errors.append(f"HTTP{r.status_code}");continue
     for chunk in r.iter_content(65536):
      if chunk:
       size+=len(chunk)
-      if size>=250000:break
+      if size>=131072 or time.monotonic()>=download_deadline:break
     elapsed=max(time.monotonic()-t,.001)
     if size>=32768:
      speed=size*8/elapsed/1e6
