@@ -214,8 +214,17 @@ def region(p):
  for c,ws in {"HKG":["HKG","HONG KONG","香港"],"TPE":["TPE","TAIPEI","台北","台湾"],"NRT":["NRT","TOKYO","JAPAN","东京","日本"],"ICN":["ICN","SEOUL","KOREA","首尔","韩国"],"SIN":["SIN","SINGAPORE","新加坡"],"LAX":["LAX","LOS ANGELES","美国","US"],"FRA":["FRA","FRANKFURT","GERMANY","德国"],"LON":["LON","LONDON","英国"]}.items():
   if any(w in n for w in ws):return c
  return "UNKNOWN"
+def configured_urls(env_name, defaults):
+ raw=os.getenv(env_name, "")
+ values=[u.strip() for u in re.split(r"[,\n]", raw) if u.strip()]
+ return list(dict.fromkeys(values + list(defaults)))
+
 def probe(p,binary,folder):
- cfg={"mixed-port":17890,"mode":"rule","log-level":"error","proxies":[p],"proxy-groups":[{"name":"TEST","type":"select","proxies":[p["name"]]}],"rules":["MATCH,TEST"]}
+ # Use an ephemeral port so a stale listener or a runner-side port collision
+ # cannot make a node appear ready before this Mihomo process is listening.
+ with socket.socket() as sock:
+  sock.bind(("127.0.0.1",0)); port=sock.getsockname()[1]
+ cfg={"mixed-port":port,"mode":"rule","log-level":"error","proxies":[p],"proxy-groups":[{"name":"TEST","type":"select","proxies":[p["name"]]}],"rules":["MATCH,TEST"]}
  f=folder/"p.yaml";f.write_text(yaml.safe_dump(cfg,allow_unicode=True,sort_keys=False))
  proc=subprocess.Popen([binary,"-f",str(f)],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
  stage="mihomo_start"
@@ -229,26 +238,60 @@ def probe(p,binary,folder):
     print(f"节点测试失败：type={p.get('type','unknown')}；阶段={stage}；原因={detail}")
     return None
    try:
-    with socket.create_connection(("127.0.0.1",17890),timeout=.2):break
+    with socket.create_connection(("127.0.0.1",port),timeout=.2):break
    except OSError:time.sleep(.1)
   else:
    print(f"节点测试失败：type={p.get('type','unknown')}；阶段=mixed_port_start_timeout")
    return None
-  px={"http":"http://127.0.0.1:17890","https":"http://127.0.0.1:17890"};t=time.monotonic();stage="latency_request"
-  r=requests.get("https://www.gstatic.com/generate_204",proxies=px,timeout=8);lat=(time.monotonic()-t)*1000
-  if r.status_code not in (200,204,301,302):
-   print(f"节点测试失败：type={p.get('type','unknown')}；阶段=latency_http；状态码={r.status_code}")
+  px={"http":f"http://127.0.0.1:{port}","https":f"http://127.0.0.1:{port}"}
+  latency_urls=configured_urls("LATENCY_TEST_URLS",[
+   "https://cp.cloudflare.com/generate_204",
+   "https://www.gstatic.com/generate_204",
+   "https://www.google.com/generate_204",
+  ])
+  lat=None;lat_errors=[]
+  for url in latency_urls:
+   stage="latency_request";t=time.monotonic()
+   try:
+    r=requests.get(url,proxies=px,timeout=(5,8))
+    elapsed=(time.monotonic()-t)*1000
+    if r.status_code in (200,204,301,302):
+     lat=elapsed;r.close();break
+    lat_errors.append(f"HTTP{r.status_code}");r.close()
+   except Exception as e:
+    lat_errors.append(type(e).__name__)
+  if lat is None:
+   print(f"节点测试失败：type={p.get('type','unknown')}；阶段=latency_all_targets_failed；尝试数={len(latency_urls)}；错误类型={','.join(lat_errors)}")
    return None
-  t=time.monotonic();stage="download_request"
-  r=requests.get(os.getenv("DOWNLOAD_TEST_URL","https://speed.cloudflare.com/__down?bytes=1000000"),proxies=px,timeout=12,stream=True);size=0
-  for chunk in r.iter_content(65536):
-   size+=len(chunk)
-   if size>=250000:break
-  r.close()
-  if size<32768:
-   print(f"节点测试失败：type={p.get('type','unknown')}；阶段=download_too_small；字节数={size}")
+  download_urls=configured_urls("DOWNLOAD_TEST_URLS",[
+   os.getenv("DOWNLOAD_TEST_URL", "https://speed.cloudflare.com/__down?bytes=1000000"),
+   "https://speed.cloudflare.com/__down?bytes=250000",
+   "https://proof.ovh.net/files/1Mb.dat",
+  ])
+  speed=None;download_errors=[]
+  for url in download_urls:
+   stage="download_request";t=time.monotonic();size=0;r=None
+   try:
+    r=requests.get(url,proxies=px,timeout=(5,15),stream=True)
+    if r.status_code < 200 or r.status_code >= 400:
+     download_errors.append(f"HTTP{r.status_code}");continue
+    for chunk in r.iter_content(65536):
+     if chunk:
+      size+=len(chunk)
+      if size>=250000:break
+    elapsed=max(time.monotonic()-t,.001)
+    if size>=32768:
+     speed=size*8/elapsed/1e6
+     break
+    download_errors.append(f"small_body_{size}")
+   except Exception as e:
+    download_errors.append(type(e).__name__)
+   finally:
+    if r is not None:r.close()
+  if speed is None:
+   print(f"节点测试失败：type={p.get('type','unknown')}；阶段=download_all_targets_failed；尝试数={len(download_urls)}；错误类型={','.join(download_errors)}")
    return None
-  return (lat,size*8/max(time.monotonic()-t,.001)/1e6)
+  return (lat,speed)
  except Exception as e:
   print(f"节点测试失败：type={p.get('type','unknown')}；阶段={stage}；异常={type(e).__name__}")
   return None

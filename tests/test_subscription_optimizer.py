@@ -4,6 +4,12 @@ from pathlib import Path
 spec=importlib.util.spec_from_file_location("opt",Path(__file__).parents[1]/"scripts"/"subscription_optimizer.py")
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 class Tests(unittest.TestCase):
+ def test_configured_urls_deduplicates_and_appends_fallbacks(self):
+  with patch.dict("os.environ",{"LATENCY_TEST_URLS":"https://a.example/ping, https://b.example/ping\nhttps://a.example/ping"}):
+   self.assertEqual(m.configured_urls("LATENCY_TEST_URLS",["https://b.example/ping","https://c.example/ping"]),["https://a.example/ping","https://b.example/ping","https://c.example/ping"])
+ def test_configured_urls_uses_defaults_when_unset(self):
+  with patch.dict("os.environ",{},clear=True):
+   self.assertEqual(m.configured_urls("LATENCY_TEST_URLS",["https://a.example/ping"]),["https://a.example/ping"])
  def test_ss(self):
   p=m.uri("ss://YWVzLTI1Ni1nY206cGFzcw==@example.com:443#Singapore");self.assertEqual(p["cipher"],"aes-256-gcm");self.assertEqual(p["password"],"pass")
  def test_trojan(self):

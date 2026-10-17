@@ -77,6 +77,8 @@ jobs:
           SORT_BY: ${{ github.event.inputs.sort || 'balanced' }}
           TOP_N: ${{ vars.SUBSCRIPTION_TOP_N || '30' }}
           DOWNLOAD_TEST_URL: ${{ vars.DOWNLOAD_TEST_URL || 'https://speed.cloudflare.com/__down?bytes=1000000' }}
+          LATENCY_TEST_URLS: ${{ vars.LATENCY_TEST_URLS || '' }}
+          DOWNLOAD_TEST_URLS: ${{ vars.DOWNLOAD_TEST_URLS || '' }}
         run: |
           set -euo pipefail
           test -n "$SUBSCRIPTION_URL" || { echo "::error::请设置对应的 TEST_SUBSCRIPTION_URL 或 SUBSCRIPTION_URL secret"; exit 2; }
