@@ -367,7 +367,7 @@ def endpoint_connectivity(value):
  return 0
 
 def main():
- a=argparse.ArgumentParser();a.add_argument("--input",default=os.getenv("SUBSCRIPTION_URL",""));a.add_argument("--output",default="subscription/clash-mi.yaml");a.add_argument("--region",default=os.getenv("REGION_FILTER",""));a.add_argument("--name-filter",default=os.getenv("NODE_NAME_FILTER",""));a.add_argument("--server-filter",default=os.getenv("NODE_SERVER_FILTER",""));a.add_argument("--inventory-only",action="store_true",help="print safe node inventory without testing or writing credentials");a.add_argument("--endpoint-check-only",action="store_true",help="TCP-check subscription host:port endpoints without creating proxy configs");a.add_argument("--sort",choices=["balanced","latency","speed"],default=os.getenv("SORT_BY","balanced"));a.add_argument("--top",type=int,default=int(os.getenv("TOP_N","30")));a.add_argument("--parse-only",action="store_true");x=a.parse_args()
+ a=argparse.ArgumentParser();a.add_argument("--input",default=os.getenv("SUBSCRIPTION_URL",""));a.add_argument("--output",default="subscription/clash-mi.yaml");a.add_argument("--region",default=os.getenv("REGION_FILTER",""));a.add_argument("--name-filter",default=os.getenv("NODE_NAME_FILTER",""));a.add_argument("--server-filter",default=os.getenv("NODE_SERVER_FILTER",""));a.add_argument("--inventory-only",action="store_true",help="print safe node inventory without testing or writing credentials");a.add_argument("--endpoint-check-only",action="store_true",help="TCP-check subscription host:port endpoints without creating proxy configs");a.add_argument("--sort",choices=["balanced","latency","speed"],default=os.getenv("SORT_BY","balanced"));a.add_argument("--top",type=int,default=int(os.getenv("TOP_N","0")));a.add_argument("--parse-only",action="store_true");x=a.parse_args()
  if not x.input:print("缺少 SUBSCRIPTION_URL",file=sys.stderr);return 2
  if x.endpoint_check_only:return endpoint_connectivity(x.input)
  try:nodes=load_nodes(x.input)
@@ -425,7 +425,7 @@ def main():
  if x.sort=="latency":res.sort(key=lambda z:(z[1] is None,z[1] or 1e9))
  elif x.sort=="speed":res.sort(key=lambda z:(z[2] is None,-(z[2] or 0)))
  else:res.sort(key=lambda z:(z[1] is None,z[1] or 1e9,-(z[2] or 0)))
- res=res[:max(1,x.top)]
+ if x.top > 0:res=res[:x.top]
  if not res:print(f"测速未通过：待测节点 {len(clean)}，通过节点 {len(res)}；未生成配置",file=sys.stderr);return 5
  doc={"proxies":[z[0] for z in res],"proxy-groups":[{"name":"优选节点","type":"select","proxies":[z[0]["name"] for z in res]}],"rules":["MATCH,优选节点"]}
  dest=Path(x.output);dest.parent.mkdir(parents=True,exist_ok=True);dest.write_text(yaml.safe_dump(doc,allow_unicode=True,sort_keys=False),encoding="utf-8")
