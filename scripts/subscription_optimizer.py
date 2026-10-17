@@ -219,6 +219,9 @@ def configured_urls(env_name, defaults):
  values=[u.strip() for u in re.split(r"[,\n]", raw) if u.strip()]
  return list(dict.fromkeys(values + list(defaults)))
 
+def format_latency(value):
+ return "NA" if value is None else f"{value:.0f} ms"
+
 def probe(p,binary,folder):
  # Use an ephemeral port so a stale listener or a runner-side port collision
  # cannot make a node appear ready before this Mihomo process is listening.
@@ -262,8 +265,7 @@ def probe(p,binary,folder):
    except Exception as e:
     lat_errors.append(type(e).__name__)
   if lat is None:
-   print(f"节点测试失败：type={p.get('type','unknown')}；阶段=latency_all_targets_failed；尝试数={len(latency_urls)}；错误类型={','.join(lat_errors)}")
-   return None
+   print(f"延迟探测失败：type={p.get('type','unknown')}；继续独立下载探测；尝试数={len(latency_urls)}；错误类型={','.join(lat_errors)}")
   download_urls=configured_urls("DOWNLOAD_TEST_URLS",[
    os.getenv("DOWNLOAD_TEST_URL", "https://speed.cloudflare.com/__down?bytes=1000000"),
    "https://speed.cloudflare.com/__down?bytes=250000",
@@ -415,6 +417,6 @@ def main():
  assert len(yaml.safe_load(dest.read_text())["proxies"])==len(res)
  print(f"已生成配置：{dest}；节点数={len(res)}；模式={'仅解析，未测速' if x.parse_only else '真实测速'}")
  if not x.parse_only:
-  for p,lat,spd in res:print(f"{p['name'][:48]}\t{lat:.0f} ms\t{spd:.2f} Mbps")
+  for p,lat,spd in res:print(f"{p['name'][:48]}\t{format_latency(lat)}\t{spd:.2f} Mbps")
  return 0
 if __name__=="__main__":raise SystemExit(main())

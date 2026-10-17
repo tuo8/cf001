@@ -7,6 +7,9 @@ class Tests(unittest.TestCase):
  def test_configured_urls_deduplicates_and_appends_fallbacks(self):
   with patch.dict("os.environ",{"LATENCY_TEST_URLS":"https://a.example/ping, https://b.example/ping\nhttps://a.example/ping"}):
    self.assertEqual(m.configured_urls("LATENCY_TEST_URLS",["https://b.example/ping","https://c.example/ping"]),["https://a.example/ping","https://b.example/ping","https://c.example/ping"])
+ def test_format_latency_supports_missing_measurement(self):
+  self.assertEqual(m.format_latency(None), "NA")
+  self.assertEqual(m.format_latency(12.4), "12 ms")
  def test_configured_urls_uses_defaults_when_unset(self):
   with patch.dict("os.environ",{},clear=True):
    self.assertEqual(m.configured_urls("LATENCY_TEST_URLS",["https://a.example/ping"]),["https://a.example/ping"])
