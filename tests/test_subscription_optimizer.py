@@ -13,6 +13,13 @@ class Tests(unittest.TestCase):
  def test_configured_urls_uses_defaults_when_unset(self):
   with patch.dict("os.environ",{},clear=True):
    self.assertEqual(m.configured_urls("LATENCY_TEST_URLS",["https://a.example/ping"]),["https://a.example/ping"])
+
+ def test_download_test_urls_include_independent_https_fallbacks(self):
+  with patch.dict("os.environ",{},clear=True):
+   urls=m.download_test_urls()
+  self.assertIn("https://speedtest.tele2.net/10MB.zip",urls)
+  self.assertIn("https://ipv4.download.thinkbroadband.com/5MB.zip",urls)
+  self.assertEqual(len(urls),len(set(urls)))
  def test_v2rayn_ss_uri(self):
   p={"name":"Singapore","type":"ss","server":"example.com","port":443,"cipher":"aes-256-gcm","password":"secret"}
   uri=m.proxy_to_share_uri(p)
