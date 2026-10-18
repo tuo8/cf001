@@ -87,7 +87,8 @@ jobs:
           NODE_ENDPOINT_CHECK_ONLY: ${{ github.event.inputs.endpoint_check_only }}
           SORT_BY: speed
           TOP_N: '100'
-          PROBE_WORKERS: ${{ vars.PROBE_WORKERS || '8' }}
+          # Public/free proxy endpoints appear to reject concurrent probes; keep pressure low.
+          PROBE_WORKERS: '2'
           DOWNLOAD_TEST_URL: ${{ vars.DOWNLOAD_TEST_URL || 'https://speed.cloudflare.com/__down?bytes=5242880' }}
           LATENCY_TEST_URLS: ${{ vars.LATENCY_TEST_URLS || '' }}
           DOWNLOAD_TEST_URLS: ${{ vars.DOWNLOAD_TEST_URLS || '' }}
