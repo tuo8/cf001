@@ -58,11 +58,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          V="$(curl -fsSL https://api.github.com/repos/MetaCubeX/mihomo/releases/latest | python -c 'import json,sys;print(json.load(sys.stdin)["tag_name"])')"
-          U="$(curl -fsSL "https://api.github.com/repos/MetaCubeX/mihomo/releases/tags/$V" | python -c 'import json,sys;d=json.load(sys.stdin);print(next((a["browser_download_url"] for a in d["assets"] if "linux-amd64-compatible" in a["name"] and a["name"].endswith(".gz")),""))')"
-          test -n "$U"
-          curl -fsSL "$U" | gunzip > "$RUNNER_TEMP/mihomo"
+          # Pin a verified release so installation does not depend on unauthenticated GitHub API rate limits.
+          V="v1.19.31"
+          U="https://github.com/MetaCubeX/mihomo/releases/download/${V}/mihomo-linux-amd64-compatible-${V}.gz"
+          SHA256="04cf9f09671704f839ddbee2e93069dc831a4123a75281e725d1d96ab9ac1afc"
+          ARCHIVE="$RUNNER_TEMP/mihomo.gz"
+          curl --fail --location --retry 3 --retry-all-errors --silent --show-error "$U" --output "$ARCHIVE"
+          echo "${SHA256}  ${ARCHIVE}" | sha256sum --check --status || { echo "::error::Mihomo archive SHA-256 mismatch"; exit 1; }
+          gunzip -c "$ARCHIVE" > "$RUNNER_TEMP/mihomo"
           chmod +x "$RUNNER_TEMP/mihomo"
+          "$RUNNER_TEMP/mihomo" -v
           echo "MIHOMO_PATH=$RUNNER_TEMP/mihomo" >> "$GITHUB_ENV"
       - name: Optimize and validate
         env:
