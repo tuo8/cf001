@@ -190,12 +190,39 @@ def uri(s):
    c,pw=z.split(":",1);p.update(type="ss",cipher=c,password=pw)
   elif k in {"trojan","vless","hysteria2","hy2"}:
    p["type"]="hysteria2" if k=="hy2" else k;p["uuid" if k=="vless" else "password"]=unquote(u.username or "")
-   if k in {"trojan","hysteria2","hy2"} or q.get("security",[""])[0] in {"tls","reality"}:
+   security=q.get("security",[""])[0].lower()
+   if k in {"trojan","hysteria2","hy2"} or security in {"tls","reality"}:
     p["tls"]=True
-    if q.get("sni"):p["servername"]=q["sni"][0]
-    if q.get("insecure",["0"])[0] in {"1","true"}:p["skip-cert-verify"]=True
-   if k=="vless" and q.get("flow"):p["flow"]=q["flow"][0]
-   if k=="vless" and q.get("type",[""])[0]=="ws":p.update(network="ws",**{"ws-opts":{"path":q.get("path",["/"])[0],"headers":{"Host":q.get("host",[u.hostname])[0]}}})
+    sni=q.get("sni",q.get("servername",[]))
+    if sni and sni[0]:p["servername"]=sni[0]
+    if q.get("insecure",["0"])[0].lower() in {"1","true"}:p["skip-cert-verify"]=True
+   if k=="vless":
+    if q.get("flow") and q["flow"][0]:p["flow"]=q["flow"][0]
+    fp=q.get("fp",q.get("fingerprint",[]))
+    if fp and fp[0]:p["client-fingerprint"]=fp[0]
+    alpn=q.get("alpn",[])
+    if alpn and alpn[0]:p["alpn"]=[x for x in alpn[0].split(",") if x]
+    if security=="reality":
+     pbk=q.get("pbk",q.get("public-key",[]))
+     sid=q.get("sid",q.get("short-id",[]))
+     reality={}
+     if pbk and pbk[0]:reality["public-key"]=pbk[0]
+     if sid and sid[0]:reality["short-id"]=sid[0]
+     if reality:p["reality-opts"]=reality
+    network=q.get("type",["tcp"])[0].lower()
+    if network=="ws":
+     p.update(network="ws",**{"ws-opts":{"path":q.get("path",["/"])[0],"headers":{"Host":q.get("host",[u.hostname])[0]}}})
+    elif network=="grpc":
+     p["network"]="grpc"
+     service=q.get("serviceName",q.get("service_name",q.get("grpc-service-name",[""])))[0]
+     if service:p["grpc-opts"]={"grpc-service-name":service}
+    elif network in {"httpupgrade","xhttp","h2"}:
+     p["network"]=network
+     path=q.get("path",["/"])[0]
+     host=q.get("host",[u.hostname])[0]
+     if network=="httpupgrade":p["http-upgrade-opts"]={"path":path,"headers":{"Host":host}}
+     elif network=="xhttp":p["xhttp-opts"]={"path":path,"host":host}
+     else:p["h2-opts"]={"path":path,"host":host}
   else:
    p["type"]="socks5" if k in {"socks","socks5"} else "http"
    if u.username:p["username"]=unquote(u.username)
