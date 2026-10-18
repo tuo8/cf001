@@ -123,4 +123,20 @@ class Tests(unittest.TestCase):
    speed,error=m.download_once("https://example.com/file",{},1024)
   self.assertIsNone(speed);self.assertEqual(error,"HTTP503")
 
+ def test_vless_reality_uri_preserves_reality_transport_options(self):
+  p=m.uri("vless://test-id@example.com:443?encryption=none&security=reality&sni=www.example.com&fp=chrome&pbk=publickey123&sid=abcd&type=grpc&serviceName=proxy%2Fedge&alpn=h2%2Chttp%2F1.1#Reality")
+  self.assertEqual(p["type"],"vless")
+  self.assertTrue(p["tls"])
+  self.assertEqual(p["servername"],"www.example.com")
+  self.assertEqual(p["client-fingerprint"],"chrome")
+  self.assertEqual(p["reality-opts"],{"public-key":"publickey123","short-id":"abcd"})
+  self.assertEqual(p["network"],"grpc")
+  self.assertEqual(p["grpc-opts"],{"grpc-service-name":"proxy/edge"})
+  self.assertEqual(p["alpn"],["h2","http/1.1"])
+
+ def test_vless_ws_uri_preserves_host_and_path(self):
+  p=m.uri("vless://test-id@example.com:443?security=tls&type=ws&host=cdn.example.com&path=%2Fedge#WS")
+  self.assertEqual(p["network"],"ws")
+  self.assertEqual(p["ws-opts"],{"path":"/edge","headers":{"Host":"cdn.example.com"}})
+
 if __name__=="__main__":unittest.main()
