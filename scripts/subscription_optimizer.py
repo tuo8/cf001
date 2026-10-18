@@ -551,7 +551,7 @@ def main():
  print(f"地区筛选后节点数: {len(clean)}")
  if x.diagnostics_only:
   if not clean:print("诊断样本为空",file=sys.stderr);return 6
-  limit=min(16,len(clean))
+  limit=min(6,len(clean))
   if limit==1:indices=[0]
   else:indices=sorted({round(i*(len(clean)-1)/(limit-1)) for i in range(limit)})
   sample=[clean[i] for i in indices]
