@@ -515,7 +515,7 @@ def write_v2rayn_subscription(results, output):
  return len(uris)
 
 def main():
- a=argparse.ArgumentParser();a.add_argument("--input",default=os.getenv("SUBSCRIPTION_URL",""));a.add_argument("--output",default="subscription/clash-mi.yaml");a.add_argument("--region",default=os.getenv("REGION_FILTER",""));a.add_argument("--name-filter",default=os.getenv("NODE_NAME_FILTER",""));a.add_argument("--server-filter",default=os.getenv("NODE_SERVER_FILTER",""));a.add_argument("--inventory-only",action="store_true",help="print safe node inventory without testing or writing credentials");a.add_argument("--endpoint-check-only",action="store_true",help="TCP-check subscription host:port endpoints without creating proxy configs");a.add_argument("--sort",choices=["balanced","latency","speed"],default=os.getenv("SORT_BY","balanced"));a.add_argument("--top",type=int,default=int(os.getenv("TOP_N","100")));a.add_argument("--parse-only",action="store_true");a.add_argument("--v2rayn-output",default=os.getenv("V2RAYN_OUTPUT",""));x=a.parse_args()
+ a=argparse.ArgumentParser();a.add_argument("--input",default=os.getenv("SUBSCRIPTION_URL",""));a.add_argument("--output",default="subscription/clash-mi.yaml");a.add_argument("--region",default=os.getenv("REGION_FILTER",""));a.add_argument("--name-filter",default=os.getenv("NODE_NAME_FILTER",""));a.add_argument("--server-filter",default=os.getenv("NODE_SERVER_FILTER",""));a.add_argument("--inventory-only",action="store_true",help="print safe node inventory without testing or writing credentials");a.add_argument("--diagnostics-only",action="store_true",help="probe a small spread of nodes without generating or publishing subscriptions");a.add_argument("--endpoint-check-only",action="store_true",help="TCP-check subscription host:port endpoints without creating proxy configs");a.add_argument("--sort",choices=["balanced","latency","speed"],default=os.getenv("SORT_BY","balanced"));a.add_argument("--top",type=int,default=int(os.getenv("TOP_N","100")));a.add_argument("--parse-only",action="store_true");a.add_argument("--v2rayn-output",default=os.getenv("V2RAYN_OUTPUT",""));x=a.parse_args()
  if not x.input:print("缺少 SUBSCRIPTION_URL",file=sys.stderr);return 2
  if x.endpoint_check_only:return endpoint_connectivity(x.input)
  try:nodes=load_nodes(x.input)
@@ -549,6 +549,27 @@ def main():
  allowed={z.strip().upper() for z in x.region.split(",") if z.strip()}
  if allowed:clean=[p for p in clean if region(p) in allowed]
  print(f"地区筛选后节点数: {len(clean)}")
+ if x.diagnostics_only:
+  if not clean:print("诊断样本为空",file=sys.stderr);return 6
+  limit=min(16,len(clean))
+  if limit==1:indices=[0]
+  else:indices=sorted({round(i*(len(clean)-1)/(limit-1)) for i in range(limit)})
+  sample=[clean[i] for i in indices]
+  print(f"只读代理诊断：样本数={len(sample)}；候选总数={len(clean)}；不生成配置、不发布订阅")
+  binary=shutil.which(os.getenv("MIHOMO_PATH","mihomo"))
+  if not binary:print("找不到 Mihomo；无法执行诊断",file=sys.stderr);return 4
+  passed=0
+  with tempfile.TemporaryDirectory() as d:
+   for i,p in enumerate(sample,1):
+    print(f"诊断样本 {i}/{len(sample)}：type={p.get('type','unknown')}；network={p.get('network','tcp')}；tls={'yes' if p.get('tls') else 'no'}；sni={'yes' if p.get('servername') else 'no'}；reality={'yes' if p.get('reality-opts') else 'no'}；port={p.get('port','?')}")
+    value=probe(p,binary,Path(d)/f"diagnostic-{i}",False)
+    if value:
+     passed+=1
+     print(f"诊断结果 {i}/{len(sample)}：PASS；延迟={format_latency(value[0])}；下载={value[1]:.2f} Mbps")
+    else:
+     print(f"诊断结果 {i}/{len(sample)}：FAIL；type={p.get('type','unknown')}")
+  print(f"只读诊断汇总：样本={len(sample)}；通过={passed}；失败={len(sample)-passed}")
+  return 0
  res=[]
  if x.parse_only:res=[(p,None,None) for p in clean]
  else:
