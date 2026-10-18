@@ -98,4 +98,29 @@ class Tests(unittest.TestCase):
   body="# profile-title: Test\n# update-interval: 24\n"+base64.b64encode(raw.encode()).decode()
   self.assertIn("trojan://",m.decode(body.encode()))
 
+ def test_speed_sort_prefers_throughput_then_latency(self):
+  rows=[({"name":"slow"},10,20.0),({"name":"fast-high-latency"},100,80.0),({"name":"fast-low-latency"},20,80.0)]
+  rows.sort(key=lambda z:(z[2] is None,-(z[2] or 0),z[1] is None,z[1] or 1e9))
+  self.assertEqual([r[0]["name"] for r in rows],["fast-low-latency","fast-high-latency","slow"])
+
+ def test_download_once_uses_received_body_bytes(self):
+  class Response:
+   status_code=200
+   def __init__(self):self.closed=False
+   def iter_content(self,chunk_size):yield b"x"*65536;yield b"y"*65536
+   def close(self):self.closed=True
+  response=Response()
+  with patch.object(m.requests,"get",return_value=response) as get:
+   speed,error=m.download_once("https://speed.cloudflare.com/__down?bytes=1000000",{},131072)
+  self.assertIsNotNone(speed);self.assertGreater(speed,0);self.assertIsNone(error);self.assertTrue(response.closed)
+  self.assertIn("bytes=131072",get.call_args.args[0])
+
+ def test_download_once_rejects_http_errors(self):
+  class Response:
+   status_code=503
+   def close(self):pass
+  with patch.object(m.requests,"get",return_value=Response()):
+   speed,error=m.download_once("https://example.com/file",{},1024)
+  self.assertIsNone(speed);self.assertEqual(error,"HTTP503")
+
 if __name__=="__main__":unittest.main()

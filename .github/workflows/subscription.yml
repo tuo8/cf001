@@ -9,8 +9,8 @@ on:
       sort:
         description: 排名方式
         type: choice
-        options: [balanced, latency, speed]
-        default: balanced
+        options: [speed]
+        default: speed
       subscription_source:
         description: 测试哪个订阅源
         type: choice
@@ -74,10 +74,10 @@ jobs:
           NODE_SERVER_FILTER: ${{ github.event.inputs.server_filter }}
           NODE_INVENTORY_ONLY: ${{ github.event.inputs.inventory_only }}
           NODE_ENDPOINT_CHECK_ONLY: ${{ github.event.inputs.endpoint_check_only }}
-          SORT_BY: ${{ github.event.inputs.sort || 'balanced' }}
-          TOP_N: ${{ vars.SUBSCRIPTION_TOP_N || '0' }}
-          PROBE_WORKERS: ${{ vars.PROBE_WORKERS || '24' }}
-          DOWNLOAD_TEST_URL: ${{ vars.DOWNLOAD_TEST_URL || 'https://speed.cloudflare.com/__down?bytes=1000000' }}
+          SORT_BY: speed
+          TOP_N: '100'
+          PROBE_WORKERS: ${{ vars.PROBE_WORKERS || '8' }}
+          DOWNLOAD_TEST_URL: ${{ vars.DOWNLOAD_TEST_URL || 'https://speed.cloudflare.com/__down?bytes=5242880' }}
           LATENCY_TEST_URLS: ${{ vars.LATENCY_TEST_URLS || '' }}
           DOWNLOAD_TEST_URLS: ${{ vars.DOWNLOAD_TEST_URLS || '' }}
         run: |

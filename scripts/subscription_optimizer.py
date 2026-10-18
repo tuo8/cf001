@@ -222,91 +222,94 @@ def configured_urls(env_name, defaults):
 def format_latency(value):
  return "NA" if value is None else f"{value:.0f} ms"
 
-def probe(p,binary,folder):
- # Every concurrent probe needs its own config directory; sharing p.yaml
- # would cause Mihomo processes to race and test the wrong node.
+def download_once(url, px, target_bytes, timeout=12):
+ """Measure throughput from bytes actually received, not latency or declared size."""
+ from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+ parts=urlsplit(url);query=parse_qsl(parts.query,keep_blank_values=True)
+ if parts.hostname=="speed.cloudflare.com" and parts.path.rstrip("/")=="/__down":
+  query=[(k,v) for k,v in query if k!="bytes"];query.append(("bytes",str(target_bytes)))
+  url=urlunsplit((parts.scheme,parts.netloc,parts.path,urlencode(query),parts.fragment))
+ response=None;size=0;first_byte=None;last_byte=None;read_error=None;started=time.monotonic();body_started=None
+ try:
+  response=requests.get(url,proxies=px,timeout=(3,5),stream=True,headers={"Cache-Control":"no-cache","Pragma":"no-cache"})
+  if response.status_code != 200:return None, f"HTTP{response.status_code}"
+  body_started=time.monotonic()
+  for chunk in response.iter_content(65536):
+   if not chunk:continue
+   now=time.monotonic()
+   if first_byte is None:first_byte=now
+   size+=len(chunk);last_byte=now
+   if size>=target_bytes:break
+   if now-started>=timeout:break
+ except Exception as exc:read_error=type(exc).__name__
+ finally:
+  if response is not None:response.close()
+ minimum=min(target_bytes,max(65536,int(target_bytes*0.75)))
+ if size<minimum or first_byte is None or last_byte is None:return None,read_error or f"small_body_{size}"
+ elapsed=max(last_byte-(body_started if body_started is not None else first_byte),0.001)
+ return min(size,target_bytes)*8/elapsed/1_000_000,None
+
+def measure_download(px, urls, target_bytes, timeout):
+ errors=[]
+ for url in urls:
+  speed,error=download_once(url,px,target_bytes,timeout=timeout)
+  if speed is not None:return speed
+  errors.append(error or "unknown")
+ print(f"下载测速失败：目标数={len(urls)}；错误类型={','.join(errors)}")
+ return None
+
+def probe(p,binary,folder,precision=False):
  folder.mkdir(parents=True,exist_ok=True)
- # Use an ephemeral port so a stale listener or a runner-side port collision
- # cannot make a node appear ready before this Mihomo process is listening.
- with socket.socket() as sock:
-  sock.bind(("127.0.0.1",0)); port=sock.getsockname()[1]
+ with socket.socket() as sock:sock.bind(("127.0.0.1",0));port=sock.getsockname()[1]
  cfg={"mixed-port":port,"mode":"rule","log-level":"error","proxies":[p],"proxy-groups":[{"name":"TEST","type":"select","proxies":[p["name"]]}],"rules":["MATCH,TEST"]}
  f=folder/"p.yaml";f.write_text(yaml.safe_dump(cfg,allow_unicode=True,sort_keys=False))
- proc=subprocess.Popen([binary,"-f",str(f)],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
- stage="mihomo_start"
+ proc=subprocess.Popen([binary,"-f",str(f)],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True);stage="mihomo_start"
  try:
-  end=time.time()+8
-  while time.time()<end:
+  end=time.monotonic()+8
+  while time.monotonic()<end:
    if proc.poll() is not None:
-    out,err=proc.communicate(timeout=1)
-    lines=(err or out or "").strip().splitlines()
-    detail=lines[-1][:180] if lines else "进程提前退出且没有错误文本"
-    print(f"节点测试失败：type={p.get('type','unknown')}；阶段={stage}；原因={detail}")
-    return None
+    out,err=proc.communicate(timeout=1);lines=(err or out or "").strip().splitlines();detail=lines[-1][:180] if lines else "进程提前退出且没有错误文本"
+    print(f"节点测试失败：type={p.get('type','unknown')}；阶段={stage}；原因={detail}");return None
    try:
     with socket.create_connection(("127.0.0.1",port),timeout=.2):break
    except OSError:time.sleep(.1)
-  else:
-   print(f"节点测试失败：type={p.get('type','unknown')}；阶段=mixed_port_start_timeout")
-   return None
+  else:print(f"节点测试失败：type={p.get('type','unknown')}；阶段=mixed_port_start_timeout");return None
   px={"http":f"http://127.0.0.1:{port}","https":f"http://127.0.0.1:{port}"}
-  latency_urls=configured_urls("LATENCY_TEST_URLS",[
-   "https://cp.cloudflare.com/generate_204",
-   "https://www.gstatic.com/generate_204",
-   "https://www.google.com/generate_204",
-  ])
-  lat=None;lat_errors=[];latency_deadline=time.monotonic()+12
+  latency_urls=configured_urls("LATENCY_TEST_URLS",["https://cp.cloudflare.com/generate_204","https://www.gstatic.com/generate_204","https://www.google.com/generate_204"])
+  lat=None;lat_errors=[];deadline=time.monotonic()+12
   for url in latency_urls:
-   if time.monotonic()>=latency_deadline:break
-   stage="latency_request";t=time.monotonic()
+   if time.monotonic()>=deadline:break
+   stage="latency_request";t=time.monotonic();r=None
    try:
-    r=requests.get(url,proxies=px,timeout=(3,4))
-    elapsed=(time.monotonic()-t)*1000
-    if r.status_code in (200,204,301,302):
-     lat=elapsed;r.close();break
-    lat_errors.append(f"HTTP{r.status_code}");r.close()
-   except Exception as e:
-    lat_errors.append(type(e).__name__)
-  if lat is None:
-   print(f"延迟探测失败：type={p.get('type','unknown')}；继续独立下载探测；尝试数={len(latency_urls)}；错误类型={','.join(lat_errors)}")
-  download_urls=configured_urls("DOWNLOAD_TEST_URLS",[
-   os.getenv("DOWNLOAD_TEST_URL", "https://speed.cloudflare.com/__down?bytes=1000000"),
-   "https://speed.cloudflare.com/__down?bytes=250000",
-   "https://proof.ovh.net/files/1Mb.dat",
-  ])
-  speed=None;download_errors=[];download_deadline=time.monotonic()+12
-  for url in download_urls:
-   if time.monotonic()>=download_deadline:break
-   stage="download_request";t=time.monotonic();size=0;r=None
-   try:
-    r=requests.get(url,proxies=px,timeout=(3,4),stream=True)
-    if r.status_code < 200 or r.status_code >= 400:
-     download_errors.append(f"HTTP{r.status_code}");continue
-    for chunk in r.iter_content(65536):
-     if chunk:
-      size+=len(chunk)
-      if size>=131072 or time.monotonic()>=download_deadline:break
-    elapsed=max(time.monotonic()-t,.001)
-    if size>=32768:
-     speed=size*8/elapsed/1e6
-     break
-    download_errors.append(f"small_body_{size}")
-   except Exception as e:
-    download_errors.append(type(e).__name__)
+    r=requests.get(url,proxies=px,timeout=(3,4));elapsed=(time.monotonic()-t)*1000
+    if r.status_code in (200,204,301,302):lat=elapsed;break
+    lat_errors.append(f"HTTP{r.status_code}")
+   except Exception as exc:lat_errors.append(type(exc).__name__)
    finally:
     if r is not None:r.close()
-  if speed is None:
-   print(f"节点测试失败：type={p.get('type','unknown')}；阶段=download_all_targets_failed；尝试数={len(download_urls)}；错误类型={','.join(download_errors)}")
-   return None
+  if lat is None:print(f"延迟探测失败：type={p.get('type','unknown')}；继续独立下载探测；错误类型={','.join(lat_errors)}")
+  download_urls=configured_urls("DOWNLOAD_TEST_URLS",[os.getenv("DOWNLOAD_TEST_URL","https://speed.cloudflare.com/__down?bytes=5242880"),"https://speed.cloudflare.com/__down?bytes=5242880"])
+  if precision:
+   speeds=[]
+   for attempt in range(2):
+    stage=f"precision_download_{attempt+1}";v=measure_download(px,download_urls,5*1024*1024,20)
+    if v is not None:speeds.append(v)
+   if len(speeds)<2:
+    print(f"节点测试失败：type={p.get('type','unknown')}；阶段=precision_download_incomplete；成功样本={len(speeds)}/2")
+    return None
+   import statistics
+   speed=statistics.median(speeds)
+  else:
+   stage="quick_download";speed=measure_download(px,download_urls,256*1024,8)
+   if speed is None:print(f"节点测试失败：type={p.get('type','unknown')}；阶段=quick_download_failed");return None
   return (lat,speed)
- except Exception as e:
-  print(f"节点测试失败：type={p.get('type','unknown')}；阶段={stage}；异常={type(e).__name__}")
-  return None
+ except Exception as exc:print(f"节点测试失败：type={p.get('type','unknown')}；阶段={stage}；异常={type(exc).__name__}");return None
  finally:
   if proc.poll() is None:
    proc.terminate()
    try:proc.wait(timeout=2)
    except subprocess.TimeoutExpired:proc.kill()
+
 def extract_endpoint_candidates(text):
  """Return host/port pairs from an endpoint list, without assuming they are proxy configs."""
  rows=[]
@@ -435,7 +438,7 @@ def write_v2rayn_subscription(results, output):
  return len(uris)
 
 def main():
- a=argparse.ArgumentParser();a.add_argument("--input",default=os.getenv("SUBSCRIPTION_URL",""));a.add_argument("--output",default="subscription/clash-mi.yaml");a.add_argument("--region",default=os.getenv("REGION_FILTER",""));a.add_argument("--name-filter",default=os.getenv("NODE_NAME_FILTER",""));a.add_argument("--server-filter",default=os.getenv("NODE_SERVER_FILTER",""));a.add_argument("--inventory-only",action="store_true",help="print safe node inventory without testing or writing credentials");a.add_argument("--endpoint-check-only",action="store_true",help="TCP-check subscription host:port endpoints without creating proxy configs");a.add_argument("--sort",choices=["balanced","latency","speed"],default=os.getenv("SORT_BY","balanced"));a.add_argument("--top",type=int,default=int(os.getenv("TOP_N","0")));a.add_argument("--parse-only",action="store_true");a.add_argument("--v2rayn-output",default=os.getenv("V2RAYN_OUTPUT",""));x=a.parse_args()
+ a=argparse.ArgumentParser();a.add_argument("--input",default=os.getenv("SUBSCRIPTION_URL",""));a.add_argument("--output",default="subscription/clash-mi.yaml");a.add_argument("--region",default=os.getenv("REGION_FILTER",""));a.add_argument("--name-filter",default=os.getenv("NODE_NAME_FILTER",""));a.add_argument("--server-filter",default=os.getenv("NODE_SERVER_FILTER",""));a.add_argument("--inventory-only",action="store_true",help="print safe node inventory without testing or writing credentials");a.add_argument("--endpoint-check-only",action="store_true",help="TCP-check subscription host:port endpoints without creating proxy configs");a.add_argument("--sort",choices=["balanced","latency","speed"],default=os.getenv("SORT_BY","balanced"));a.add_argument("--top",type=int,default=int(os.getenv("TOP_N","100")));a.add_argument("--parse-only",action="store_true");a.add_argument("--v2rayn-output",default=os.getenv("V2RAYN_OUTPUT",""));x=a.parse_args()
  if not x.input:print("缺少 SUBSCRIPTION_URL",file=sys.stderr);return 2
  if x.endpoint_check_only:return endpoint_connectivity(x.input)
  try:nodes=load_nodes(x.input)
@@ -474,25 +477,41 @@ def main():
  else:
   binary=shutil.which(os.getenv("MIHOMO_PATH","mihomo"))
   if not binary:print("找不到 Mihomo；不会把未测速节点标记为可用",file=sys.stderr);return 4
-  workers=max(1,min(32,int(os.getenv("PROBE_WORKERS","24"))))
-  print(f"并发测速工作线程: {workers}")
+  workers=max(1,min(16,int(os.getenv("PROBE_WORKERS","8"))))
+  print(f"初筛并发测速工作线程: {workers}")
   with tempfile.TemporaryDirectory() as d:
    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-    futures={pool.submit(probe,p,binary,Path(d)/f"node-{i}"):(i,p) for i,p in enumerate(clean)}
+    futures={pool.submit(probe,p,binary,Path(d)/f"quick-{i}",False):(i,p) for i,p in enumerate(clean)}
     completed=0
     for future in concurrent.futures.as_completed(futures):
      _,p=futures[future]
      try:v=future.result()
-     except Exception as e:
-      print(f"节点测试异常：type={p.get('type','unknown')}；异常={type(e).__name__}")
-      v=None
+     except Exception as exc:print(f"节点初筛异常：type={p.get('type','unknown')}；异常={type(exc).__name__}");v=None
      if v:res.append((p,*v))
      completed+=1
-     if completed%50==0 or completed==len(clean):
-      print(f"测速进度: {completed}/{len(clean)}；通过={len(res)}")
+     if completed%50==0 or completed==len(clean):print(f"初筛进度: {completed}/{len(clean)}；通过={len(res)}")
+   res.sort(key=lambda z:(z[2] is None,-(z[2] or 0),z[1] is None,z[1] or 1e9))
+   target=x.top if x.top>0 else len(res);batch_size=max(200,target*2) if target else max(1,len(res))
+   quick_ranked=list(res);precise=[]
+   for batch_start in range(0,len(quick_ranked),batch_size):
+    batch=quick_ranked[batch_start:batch_start+batch_size]
+    print(f"开始下载精测：候选 {batch_start+1}-{batch_start+len(batch)} / {len(quick_ranked)}；每节点最多 2 次")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1,min(4,workers))) as pool:
+     futures={pool.submit(probe,z[0],binary,Path(d)/f"precision-{batch_start+i}",True):z[0] for i,z in enumerate(batch)}
+     completed=0
+     for future in concurrent.futures.as_completed(futures):
+      p=futures[future]
+      try:v=future.result()
+      except Exception as exc:print(f"节点精测异常：type={p.get('type','unknown')}；异常={type(exc).__name__}");v=None
+      if v:precise.append((p,*v))
+      completed+=1
+      if completed%25==0 or completed==len(batch):print(f"精测进度: {batch_start+completed}/{len(quick_ranked)}；精测合格={len(precise)}")
+    precise.sort(key=lambda z:(z[2] is None,-(z[2] or 0),z[1] is None,z[1] or 1e9))
+    if x.top>0 and len(precise)>=x.top:break
+   res=precise
  if x.sort=="latency":res.sort(key=lambda z:(z[1] is None,z[1] or 1e9))
- elif x.sort=="speed":res.sort(key=lambda z:(z[2] is None,-(z[2] or 0)))
- else:res.sort(key=lambda z:(z[1] is None,z[1] or 1e9,-(z[2] or 0)))
+ elif x.sort=="speed":res.sort(key=lambda z:(z[2] is None,-(z[2] or 0),z[1] is None,z[1] or 1e9))
+ else:res.sort(key=lambda z:(z[2] is None,-(z[2] or 0),z[1] is None,z[1] or 1e9))
  if x.top > 0:res=res[:x.top]
  if not res:print(f"测速未通过：待测节点 {len(clean)}，通过节点 {len(res)}；未生成配置",file=sys.stderr);return 5
  doc={"proxies":[z[0] for z in res],"proxy-groups":[{"name":"优选节点","type":"select","proxies":[z[0]["name"] for z in res]}],"rules":["MATCH,优选节点"]}
