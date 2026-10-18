@@ -4,6 +4,12 @@ from pathlib import Path
 spec=importlib.util.spec_from_file_location("opt",Path(__file__).parents[1]/"scripts"/"subscription_optimizer.py")
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 class Tests(unittest.TestCase):
+ def test_mihomo_error_labels_are_sanitized(self):
+  labels=m.mihomo_error_labels("REALITY handshake failed for secret.example:443: unexpected EOF")
+  self.assertIn("reality",labels)
+  self.assertIn("handshake",labels)
+  self.assertIn("remote_eof",labels)
+  self.assertNotIn("secret.example",labels)
  def test_configured_urls_deduplicates_and_appends_fallbacks(self):
   with patch.dict("os.environ",{"LATENCY_TEST_URLS":"https://a.example/ping, https://b.example/ping\nhttps://a.example/ping"}):
    self.assertEqual(m.configured_urls("LATENCY_TEST_URLS",["https://b.example/ping","https://c.example/ping"]),["https://a.example/ping","https://b.example/ping","https://c.example/ping"])
