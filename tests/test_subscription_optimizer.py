@@ -103,6 +103,17 @@ class Tests(unittest.TestCase):
   rows.sort(key=lambda z:(z[2] is None,-(z[2] or 0),z[1] is None,z[1] or 1e9))
   self.assertEqual([r[0]["name"] for r in rows],["fast-low-latency","fast-high-latency","slow"])
 
+ def test_exception_label_extracts_tls_reason_without_url(self):
+  exc=Exception("[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred for https://example.com/secret?token=abc")
+  label=m.exception_label(exc)
+  self.assertEqual(label,"Exception:UNEXPECTED_EOF_WHILE_READING")
+  self.assertNotIn("example.com",label)
+  self.assertNotIn("token",label)
+
+ def test_exception_label_reports_certificate_failure(self):
+  exc=Exception("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed")
+  self.assertEqual(m.exception_label(exc),"Exception:CERTIFICATE_VERIFY_FAILED")
+
  def test_download_once_uses_received_body_bytes(self):
   class Response:
    status_code=200

@@ -249,6 +249,14 @@ def configured_urls(env_name, defaults):
 def format_latency(value):
  return "NA" if value is None else f"{value:.0f} ms"
 
+def exception_label(exc):
+ """Return a compact diagnostic category without logging URLs or credentials."""
+ message=str(exc)
+ match=re.search(r"\[SSL:\s*([A-Z0-9_]+)",message)
+ if match:return f"{type(exc).__name__}:{match.group(1)}"
+ for marker in ("CERTIFICATE_VERIFY_FAILED","WRONG_VERSION_NUMBER","UNEXPECTED_EOF_WHILE_READING","TLSV1_ALERT"):
+  if marker in message:return f"{type(exc).__name__}:{marker}"
+ return type(exc).__name__
 def download_once(url, px, target_bytes, timeout=12):
  """Measure throughput from bytes actually received, not latency or declared size."""
  from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
@@ -268,7 +276,7 @@ def download_once(url, px, target_bytes, timeout=12):
    size+=len(chunk);last_byte=now
    if size>=target_bytes:break
    if now-started>=timeout:break
- except Exception as exc:read_error=type(exc).__name__
+ except Exception as exc:read_error=exception_label(exc)
  finally:
   if response is not None:response.close()
  minimum=min(target_bytes,max(65536,int(target_bytes*0.75)))
@@ -282,7 +290,7 @@ def measure_download(px, urls, target_bytes, timeout):
   speed,error=download_once(url,px,target_bytes,timeout=timeout)
   if speed is not None:return speed
   errors.append(error or "unknown")
- print(f"下载测速失败：目标数={len(urls)}；错误类型={','.join(errors)}")
+ print(f"下载测速失败：目标数={len(urls)}；错误详情={','.join(errors)}")
  return None
 
 def probe(p,binary,folder,precision=False):
@@ -311,7 +319,7 @@ def probe(p,binary,folder,precision=False):
     r=requests.get(url,proxies=px,timeout=(3,4));elapsed=(time.monotonic()-t)*1000
     if r.status_code in (200,204,301,302):lat=elapsed;break
     lat_errors.append(f"HTTP{r.status_code}")
-   except Exception as exc:lat_errors.append(type(exc).__name__)
+   except Exception as exc:lat_errors.append(exception_label(exc))
    finally:
     if r is not None:r.close()
   if lat is None:print(f"延迟探测失败：type={p.get('type','unknown')}；继续独立下载探测；错误类型={','.join(lat_errors)}")
@@ -330,7 +338,7 @@ def probe(p,binary,folder,precision=False):
    stage="quick_download";speed=measure_download(px,download_urls,256*1024,8)
    if speed is None:print(f"节点测试失败：type={p.get('type','unknown')}；阶段=quick_download_failed");return None
   return (lat,speed)
- except Exception as exc:print(f"节点测试失败：type={p.get('type','unknown')}；阶段={stage}；异常={type(exc).__name__}");return None
+ except Exception as exc:print(f"节点测试失败：type={p.get('type','unknown')}；阶段={stage}；异常={exception_label(exc)}");return None
  finally:
   if proc.poll() is None:
    proc.terminate()
