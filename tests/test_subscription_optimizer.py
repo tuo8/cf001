@@ -49,6 +49,14 @@ class Tests(unittest.TestCase):
   p=m.uri("ss://YWVzLTI1Ni1nY206cGFzcw==@example.com:443#Singapore");self.assertEqual(p["cipher"],"aes-256-gcm");self.assertEqual(p["password"],"pass")
  def test_trojan(self):
   p=m.uri("trojan://secret@example.com:443?sni=example.org#Tokyo");self.assertTrue(p["tls"]);self.assertEqual(p["servername"],"example.org")
+ def test_clean_nodes_enables_required_trojan_tls_and_deduplicates(self):
+  nodes=[
+   {"name":"Trojan A","type":"trojan","server":"example.com","port":443,"password":"secret","servername":"example.com","network":"ws","ws-opts":{"path":"/","headers":{"Host":"example.com"}}},
+   {"name":"Trojan B","type":"trojan","server":"example.com","port":443,"password":"secret","servername":"example.com","network":"ws","ws-opts":{"path":"/","headers":{"Host":"example.com"}},"tls":True},
+  ]
+  clean=m.clean_nodes(nodes)
+  self.assertEqual(len(clean),1)
+  self.assertTrue(clean[0]["tls"])
  def test_yaml(self):
   d=m.parse("proxies:\n  - name: 'Hong Kong 01'\n    type: ss\n    server: example.com\n    port: 443\n    cipher: aes-128-gcm\n    password: secret\n");self.assertEqual(d[0]["name"],"Hong Kong 01")
  def test_base64(self):
