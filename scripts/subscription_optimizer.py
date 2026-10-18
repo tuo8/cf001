@@ -524,6 +524,25 @@ def main():
  clean=clean_nodes(nodes)
  print(f"去重后节点数: {len(clean)}")
  if x.inventory_only:
+  from collections import Counter
+  type_counts=Counter(str(p.get("type","unknown")) for p in clean)
+  network_counts=Counter(str(p.get("network","tcp")).lower() for p in clean)
+  tls_field=Counter("true" if p.get("tls") is True else "false_or_missing" for p in clean)
+  sni_field=Counter("present" if p.get("servername") else "missing" for p in clean)
+  reality_field=Counter("present" if p.get("reality-opts") else "missing" for p in clean)
+  ws_host=Counter("present" if ((p.get("ws-opts") or {}).get("headers") or {}).get("Host") else "missing" for p in clean)
+  ws_path=Counter("present" if (p.get("ws-opts") or {}).get("path") else "missing" for p in clean)
+  skip_verify=Counter("true" if p.get("skip-cert-verify") is True else "false_or_missing" for p in clean)
+  server_kind=Counter()
+  for p in clean:
+   try:ipaddress.ip_address(str(p.get("server","")));server_kind["IP"]+=1
+   except ValueError:server_kind["domain"]+=1
+  print("元数据统计（仅计数，不含凭据或具体地址）：")
+  print("  type="+str(dict(type_counts)))
+  print("  network="+str(dict(network_counts)))
+  print("  tls_field="+str(dict(tls_field))+"；servername="+str(dict(sni_field))+"；reality_opts="+str(dict(reality_field)))
+  print("  ws_host="+str(dict(ws_host))+"；ws_path="+str(dict(ws_path))+"；skip_cert_verify="+str(dict(skip_verify)))
+  print("  server_kind="+str(dict(server_kind)))
   needle=x.server_filter.strip().casefold()
   print("节点清单（仅名称、服务器地址、端口；不含凭据）:")
   for i,p in enumerate(clean,1):
