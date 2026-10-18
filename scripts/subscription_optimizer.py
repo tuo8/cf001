@@ -258,6 +258,27 @@ def download_test_urls():
   "https://ipv4.download.thinkbroadband.com/5MB.zip",
  ])
 
+def mihomo_error_labels(log_text):
+ """Extract safe, coarse failure labels from Mihomo logs without exposing endpoints or credentials."""
+ text=str(log_text).lower()
+ labels=[]
+ for marker,label in (
+  ("reality","reality"),
+  ("certificate","certificate"),
+  ("tls","tls"),
+  ("handshake","handshake"),
+  ("unexpected eof","remote_eof"),
+  ("eof","remote_eof"),
+  ("timeout","timeout"),
+  ("refused","connection_refused"),
+  ("no such host","dns_failure"),
+  ("network is unreachable","network_unreachable"),
+  ("proxy error","proxy_error"),
+  ("failed to dial","dial_failure"),
+ ):
+  if marker in text and label not in labels:labels.append(label)
+ return labels[:6]
+
 def exception_label(exc):
  """Return a compact diagnostic category without logging URLs or credentials."""
  message=str(exc)
@@ -305,14 +326,15 @@ def measure_download(px, urls, target_bytes, timeout):
 def probe(p,binary,folder,precision=False):
  folder.mkdir(parents=True,exist_ok=True)
  with socket.socket() as sock:sock.bind(("127.0.0.1",0));port=sock.getsockname()[1]
- cfg={"mixed-port":port,"mode":"rule","log-level":"error","proxies":[p],"proxy-groups":[{"name":"TEST","type":"select","proxies":[p["name"]]}],"rules":["MATCH,TEST"]}
+ cfg={"mixed-port":port,"mode":"rule","log-level":"info","proxies":[p],"proxy-groups":[{"name":"TEST","type":"select","proxies":[p["name"]]}],"rules":["MATCH,TEST"]}
  f=folder/"p.yaml";f.write_text(yaml.safe_dump(cfg,allow_unicode=True,sort_keys=False))
- proc=subprocess.Popen([binary,"-f",str(f)],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True);stage="mihomo_start"
+ proc=subprocess.Popen([binary,"-f",str(f)],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True);stage="mihomo_start";mihomo_output=""
  try:
   end=time.monotonic()+8
   while time.monotonic()<end:
    if proc.poll() is not None:
-    out,err=proc.communicate(timeout=1);lines=(err or out or "").strip().splitlines();detail=lines[-1][:180] if lines else "进程提前退出且没有错误文本"
+    out,_=proc.communicate(timeout=1);mihomo_output=out or "";labels=mihomo_error_labels(mihomo_output)
+    detail=",".join(labels) if labels else "mihomo_exited_early"
     print(f"节点测试失败：type={p.get('type','unknown')}；阶段={stage}；原因={detail}");return None
    try:
     with socket.create_connection(("127.0.0.1",port),timeout=.2):break
@@ -351,8 +373,17 @@ def probe(p,binary,folder,precision=False):
  finally:
   if proc.poll() is None:
    proc.terminate()
-   try:proc.wait(timeout=2)
-   except subprocess.TimeoutExpired:proc.kill()
+  try:
+   out,_=proc.communicate(timeout=2)
+   if out:mihomo_output += out
+  except subprocess.TimeoutExpired:
+   proc.kill()
+   try:
+    out,_=proc.communicate(timeout=1)
+    if out:mihomo_output += out
+   except subprocess.TimeoutExpired:pass
+  labels=mihomo_error_labels(mihomo_output)
+  if labels:print(f"Mihomo诊断：type={p.get('type','unknown')}；阶段={stage}；分类={','.join(labels)}")
 
 def extract_endpoint_candidates(text):
  """Return host/port pairs from an endpoint list, without assuming they are proxy configs."""
