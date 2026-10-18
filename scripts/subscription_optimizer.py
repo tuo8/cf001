@@ -328,12 +328,16 @@ def probe(p,binary,folder,precision=False):
  with socket.socket() as sock:sock.bind(("127.0.0.1",0));port=sock.getsockname()[1]
  cfg={"mixed-port":port,"mode":"rule","log-level":"info","proxies":[p],"proxy-groups":[{"name":"TEST","type":"select","proxies":[p["name"]]}],"rules":["MATCH,TEST"]}
  f=folder/"p.yaml";f.write_text(yaml.safe_dump(cfg,allow_unicode=True,sort_keys=False))
- proc=subprocess.Popen([binary,"-f",str(f)],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True);stage="mihomo_start";mihomo_output=""
+ log_path=folder/"mihomo.log"
+ log_handle=log_path.open("w",encoding="utf-8")
+ proc=subprocess.Popen([binary,"-f",str(f)],stdout=log_handle,stderr=subprocess.STDOUT,text=True)
+ stage="mihomo_start"
  try:
   end=time.monotonic()+8
   while time.monotonic()<end:
    if proc.poll() is not None:
-    out,_=proc.communicate(timeout=1);mihomo_output=out or "";labels=mihomo_error_labels(mihomo_output)
+    proc.communicate(timeout=1);log_handle.flush()
+    labels=mihomo_error_labels(log_path.read_text(encoding="utf-8",errors="replace")[-20000:])
     detail=",".join(labels) if labels else "mihomo_exited_early"
     print(f"节点测试失败：type={p.get('type','unknown')}；阶段={stage}；原因={detail}");return None
    try:
@@ -371,18 +375,16 @@ def probe(p,binary,folder,precision=False):
   return (lat,speed)
  except Exception as exc:print(f"节点测试失败：type={p.get('type','unknown')}；阶段={stage}；异常={exception_label(exc)}");return None
  finally:
-  if proc.poll() is None:
-   proc.terminate()
-  try:
-   out,_=proc.communicate(timeout=2)
-   if out:mihomo_output += out
+  if proc.poll() is None:proc.terminate()
+  try:proc.communicate(timeout=2)
   except subprocess.TimeoutExpired:
    proc.kill()
-   try:
-    out,_=proc.communicate(timeout=1)
-    if out:mihomo_output += out
+   try:proc.communicate(timeout=1)
    except subprocess.TimeoutExpired:pass
-  labels=mihomo_error_labels(mihomo_output)
+  log_handle.flush();log_handle.close()
+  try:log_text=log_path.read_text(encoding="utf-8",errors="replace")[-20000:]
+  except OSError:log_text=""
+  labels=mihomo_error_labels(log_text)
   if labels:print(f"Mihomo诊断：type={p.get('type','unknown')}；阶段={stage}；分类={','.join(labels)}")
 
 def extract_endpoint_candidates(text):
