@@ -249,6 +249,15 @@ def configured_urls(env_name, defaults):
 def format_latency(value):
  return "NA" if value is None else f"{value:.0f} ms"
 
+def download_test_urls():
+ """Use independent HTTPS mirrors so one blocked endpoint does not reject a working proxy."""
+ return configured_urls("DOWNLOAD_TEST_URLS",[
+  os.getenv("DOWNLOAD_TEST_URL","https://speed.cloudflare.com/__down?bytes=5242880"),
+  "https://proof.ovh.net/files/10Mb.dat",
+  "https://speedtest.tele2.net/10MB.zip",
+  "https://ipv4.download.thinkbroadband.com/5MB.zip",
+ ])
+
 def exception_label(exc):
  """Return a compact diagnostic category without logging URLs or credentials."""
  message=str(exc)
@@ -323,7 +332,7 @@ def probe(p,binary,folder,precision=False):
    finally:
     if r is not None:r.close()
   if lat is None:print(f"延迟探测失败：type={p.get('type','unknown')}；继续独立下载探测；错误类型={','.join(lat_errors)}")
-  download_urls=configured_urls("DOWNLOAD_TEST_URLS",[os.getenv("DOWNLOAD_TEST_URL","https://speed.cloudflare.com/__down?bytes=5242880"),"https://proof.ovh.net/files/10Mb.dat"])
+  download_urls=download_test_urls()
   if precision:
    speeds=[]
    for attempt in range(2):
