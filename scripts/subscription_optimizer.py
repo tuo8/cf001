@@ -373,8 +373,12 @@ def probe(p,binary,folder,precision=False):
    import statistics
    speed=statistics.median(speeds)
   else:
-   stage="quick_download";speed=measure_download(px,download_urls,256*1024,8)
-   if speed is None:print(f"节点测试失败：type={p.get('type','unknown')}；阶段=quick_download_failed");return None
+   relaxed=os.getenv("RELAXED_MODE","false").strip().lower() in {"1","true","yes","on"}
+   target_bytes=64*1024 if relaxed else 256*1024
+   timeout=12 if relaxed else 8
+   stage="relaxed_download" if relaxed else "quick_download"
+   speed=measure_download(px,download_urls,target_bytes,timeout)
+   if speed is None:print(f"节点测试失败：type={p.get('type','unknown')}；阶段={stage}_failed");return None
   return (lat,speed)
  except Exception as exc:print(f"节点测试失败：type={p.get('type','unknown')}；阶段={stage}；异常={exception_label(exc)}");return None
  finally:
@@ -628,24 +632,30 @@ def main():
      completed+=1
      if completed%50==0 or completed==len(clean):print(f"初筛进度: {completed}/{len(clean)}；通过={len(res)}")
    res.sort(key=lambda z:(z[2] is None,-(z[2] or 0),z[1] is None,z[1] or 1e9))
-   target=x.top if x.top>0 else len(res);batch_size=max(200,target*2) if target else max(1,len(res))
-   quick_ranked=list(res);precise=[]
-   for batch_start in range(0,len(quick_ranked),batch_size):
-    batch=quick_ranked[batch_start:batch_start+batch_size]
-    print(f"开始下载精测：候选 {batch_start+1}-{batch_start+len(batch)} / {len(quick_ranked)}；每节点最多 2 次")
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1,min(4,workers))) as pool:
-     futures={pool.submit(probe,z[0],binary,Path(d)/f"precision-{batch_start+i}",True):z[0] for i,z in enumerate(batch)}
-     completed=0
-     for future in concurrent.futures.as_completed(futures):
-      p=futures[future]
-      try:v=future.result()
-      except Exception as exc:print(f"节点精测异常：type={p.get('type','unknown')}；异常={type(exc).__name__}");v=None
-      if v:precise.append((p,*v))
-      completed+=1
-      if completed%25==0 or completed==len(batch):print(f"精测进度: {batch_start+completed}/{len(quick_ranked)}；精测合格={len(precise)}")
-    precise.sort(key=lambda z:(z[2] is None,-(z[2] or 0),z[1] is None,z[1] or 1e9))
-    if x.top>0 and len(precise)>=x.top:break
-   res=precise
+   quick_ranked=list(res)
+   relaxed=os.getenv("RELAXED_MODE","false").strip().lower() in {"1","true","yes","on"}
+   if relaxed:
+    print(f"宽松测速模式：跳过双次 5 MiB 精测；保留单次实际下载测速通过节点={len(quick_ranked)}")
+    res=quick_ranked
+   else:
+    target=x.top if x.top>0 else len(res);batch_size=max(200,target*2) if target else max(1,len(res))
+    precise=[]
+    for batch_start in range(0,len(quick_ranked),batch_size):
+     batch=quick_ranked[batch_start:batch_start+batch_size]
+     print(f"开始下载精测：候选 {batch_start+1}-{batch_start+len(batch)} / {len(quick_ranked)}；每节点最多 2 次")
+     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1,min(4,workers))) as pool:
+      futures={pool.submit(probe,z[0],binary,Path(d)/f"precision-{batch_start+i}",True):z[0] for i,z in enumerate(batch)}
+      completed=0
+      for future in concurrent.futures.as_completed(futures):
+       p=futures[future]
+       try:v=future.result()
+       except Exception as exc:print(f"节点精测异常：type={p.get('type','unknown')}；异常={type(exc).__name__}");v=None
+       if v:precise.append((p,*v))
+       completed+=1
+       if completed%25==0 or completed==len(batch):print(f"精测进度: {batch_start+completed}/{len(quick_ranked)}；精测合格={len(precise)}")
+     precise.sort(key=lambda z:(z[2] is None,-(z[2] or 0),z[1] is None,z[1] or 1e9))
+     if x.top>0 and len(precise)>=x.top:break
+    res=precise
  if x.sort=="latency":res.sort(key=lambda z:(z[1] is None,z[1] or 1e9))
  elif x.sort=="speed":res.sort(key=lambda z:(z[2] is None,-(z[2] or 0),z[1] is None,z[1] or 1e9))
  else:res.sort(key=lambda z:(z[2] is None,-(z[2] or 0),z[1] is None,z[1] or 1e9))

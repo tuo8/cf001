@@ -39,6 +39,11 @@ on:
         type: boolean
         required: false
         default: false
+      relaxed_mode:
+        description: 宽松测速：单次下载 64 KiB，跳过双次 5 MiB 精测；仍只收录实际下载成功节点
+        type: boolean
+        required: false
+        default: false
   schedule:
     - cron: '23 */6 * * *'
 permissions:
@@ -85,6 +90,7 @@ jobs:
           NODE_INVENTORY_ONLY: ${{ github.event.inputs.inventory_only }}
           NODE_DIAGNOSTICS_ONLY: ${{ github.event.inputs.diagnostics_only }}
           NODE_ENDPOINT_CHECK_ONLY: ${{ github.event.inputs.endpoint_check_only }}
+          RELAXED_MODE: ${{ github.event.inputs.relaxed_mode }}
           SORT_BY: speed
           TOP_N: '100'
           # Public/free proxy endpoints appear to reject concurrent probes; keep pressure low.
