@@ -12,10 +12,10 @@ on:
         options: [speed]
         default: speed
       subscription_source:
-        description: 测试哪个订阅源
+        description: 正式订阅源（读取仓库 Secret TEST_SUBSCRIPTION_URL）
         type: choice
-        options: [original, test]
-        default: test
+        options: [formal]
+        default: formal
       node_filter:
         description: 可选，按节点名称包含关键词筛选，例如 US9
         required: false
@@ -82,7 +82,7 @@ jobs:
           DOWNLOAD_TEST_URLS: ${{ vars.DOWNLOAD_TEST_URLS || '' }}
         run: |
           set -euo pipefail
-          test -n "$SUBSCRIPTION_URL" || { echo "::error::请设置对应的 TEST_SUBSCRIPTION_URL 或 SUBSCRIPTION_URL secret"; exit 2; }
+          test -n "$SUBSCRIPTION_URL" || { echo "::error::请在仓库 Secrets 中设置正式订阅 Secret：TEST_SUBSCRIPTION_URL"; exit 2; }
           if [[ "${NODE_ENDPOINT_CHECK_ONLY:-false}" == "true" ]]; then
             python scripts/subscription_optimizer.py --endpoint-check-only --output "$RUNNER_TEMP/clash-mi.yaml"
             exit 0
