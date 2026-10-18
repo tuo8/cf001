@@ -573,7 +573,7 @@ def main():
     else:print(f"串行诊断 {i}/{len(sample)}：FAIL；type={p.get('type','unknown')}")
   parallel_passed=0
   with tempfile.TemporaryDirectory() as d:
-   with concurrent.futures.ThreadPoolExecutor(max_workers=min(6,len(sample))) as pool:
+   with concurrent.futures.ThreadPoolExecutor(max_workers=min(2,len(sample))) as pool:
     futures={pool.submit(probe,p,binary,Path(d)/f"parallel-{i}",False):(i,p) for i,p in enumerate(sample,1)}
     for future in concurrent.futures.as_completed(futures):
      i,p=futures[future]
