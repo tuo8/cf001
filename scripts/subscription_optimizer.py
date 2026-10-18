@@ -326,7 +326,7 @@ def measure_download(px, urls, target_bytes, timeout):
 def probe(p,binary,folder,precision=False):
  folder.mkdir(parents=True,exist_ok=True)
  with socket.socket() as sock:sock.bind(("127.0.0.1",0));port=sock.getsockname()[1]
- cfg={"mixed-port":port,"mode":"rule","log-level":"info","proxies":[p],"proxy-groups":[{"name":"TEST","type":"select","proxies":[p["name"]]}],"rules":["MATCH,TEST"]}
+ cfg={"mixed-port":port,"mode":"rule","log-level":"debug","proxies":[p],"proxy-groups":[{"name":"TEST","type":"select","proxies":[p["name"]]}],"rules":["MATCH,TEST"]}
  f=folder/"p.yaml";f.write_text(yaml.safe_dump(cfg,allow_unicode=True,sort_keys=False))
  log_path=folder/"mihomo.log"
  log_handle=log_path.open("w",encoding="utf-8")
