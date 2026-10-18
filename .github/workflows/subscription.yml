@@ -66,7 +66,7 @@ jobs:
           echo "MIHOMO_PATH=$RUNNER_TEMP/mihomo" >> "$GITHUB_ENV"
       - name: Optimize and validate
         env:
-          SUBSCRIPTION_URL: ${{ github.event_name == 'schedule' && secrets.TEST_SUBSCRIPTION_URL || (github.event.inputs.subscription_source == 'test' && secrets.TEST_SUBSCRIPTION_URL) || secrets.SUBSCRIPTION_URL }}
+          SUBSCRIPTION_URL: ${{ secrets.TEST_SUBSCRIPTION_URL }}
           CLASH_PROXY_TEMPLATE: ${{ secrets.CLASH_PROXY_TEMPLATE }}
           ENDPOINT_MAX_CANDIDATES: ${{ vars.ENDPOINT_MAX_CANDIDATES || '60' }}
           REGION_FILTER: ${{ github.event.inputs.region }}
