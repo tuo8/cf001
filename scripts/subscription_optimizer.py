@@ -231,7 +231,7 @@ def download_once(url, px, target_bytes, timeout=12):
   url=urlunsplit((parts.scheme,parts.netloc,parts.path,urlencode(query),parts.fragment))
  response=None;size=0;first_byte=None;last_byte=None;read_error=None;started=time.monotonic();body_started=None
  try:
-  response=requests.get(url,proxies=px,timeout=(3,5),stream=True,headers={"Cache-Control":"no-cache","Pragma":"no-cache"})
+  response=requests.get(url,proxies=px,timeout=(3,max(5,timeout)),stream=True,headers={"Cache-Control":"no-cache","Pragma":"no-cache"})
   if response.status_code != 200:return None, f"HTTP{response.status_code}"
   body_started=time.monotonic()
   for chunk in response.iter_content(65536):
@@ -288,7 +288,7 @@ def probe(p,binary,folder,precision=False):
    finally:
     if r is not None:r.close()
   if lat is None:print(f"延迟探测失败：type={p.get('type','unknown')}；继续独立下载探测；错误类型={','.join(lat_errors)}")
-  download_urls=configured_urls("DOWNLOAD_TEST_URLS",[os.getenv("DOWNLOAD_TEST_URL","https://speed.cloudflare.com/__down?bytes=5242880"),"https://speed.cloudflare.com/__down?bytes=5242880"])
+  download_urls=configured_urls("DOWNLOAD_TEST_URLS",[os.getenv("DOWNLOAD_TEST_URL","https://speed.cloudflare.com/__down?bytes=5242880"),"https://proof.ovh.net/files/10Mb.dat"])
   if precision:
    speeds=[]
    for attempt in range(2):
