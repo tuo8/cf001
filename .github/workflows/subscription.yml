@@ -29,6 +29,11 @@ on:
         type: boolean
         required: false
         default: false
+      diagnostics_only:
+        description: 只读抽样测速最多16个节点，输出脱敏连接诊断，不生成或发布订阅
+        type: boolean
+        required: false
+        default: false
       endpoint_check_only:
         description: 对当前订阅中的服务器地址做 TCP 连通性诊断，不生成代理配置
         type: boolean
@@ -78,6 +83,7 @@ jobs:
           NODE_NAME_FILTER: ${{ github.event.inputs.node_filter }}
           NODE_SERVER_FILTER: ${{ github.event.inputs.server_filter }}
           NODE_INVENTORY_ONLY: ${{ github.event.inputs.inventory_only }}
+          NODE_DIAGNOSTICS_ONLY: ${{ github.event.inputs.diagnostics_only }}
           NODE_ENDPOINT_CHECK_ONLY: ${{ github.event.inputs.endpoint_check_only }}
           SORT_BY: speed
           TOP_N: '100'
@@ -88,6 +94,10 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$SUBSCRIPTION_URL" || { echo "::error::请在仓库 Secrets 中设置正式订阅 Secret：TEST_SUBSCRIPTION_URL"; exit 2; }
+          if [[ "${NODE_DIAGNOSTICS_ONLY:-false}" == "true" ]]; then
+            python scripts/subscription_optimizer.py --diagnostics-only --output "$RUNNER_TEMP/clash-mi.yaml"
+            exit 0
+          fi
           if [[ "${NODE_ENDPOINT_CHECK_ONLY:-false}" == "true" ]]; then
             python scripts/subscription_optimizer.py --endpoint-check-only --output "$RUNNER_TEMP/clash-mi.yaml"
             exit 0
@@ -106,7 +116,7 @@ jobs:
           print('Clash YAML structure valid:',len(names),'proxies')
           PY
       - name: Validate v2rayN subscription output
-        if: ${{ success() && (github.event_name != 'workflow_dispatch' || (!inputs.inventory_only && !inputs.endpoint_check_only)) }}
+        if: ${{ success() && (github.event_name != 'workflow_dispatch' || (!inputs.inventory_only && !inputs.endpoint_check_only && !inputs.diagnostics_only)) }}
         run: test -s "$RUNNER_TEMP/v2rayn.txt"
       - name: Publish validated subscription to Cloudflare KV
         if: ${{ success() && (github.event_name != 'workflow_dispatch' || (!inputs.inventory_only && !inputs.endpoint_check_only)) }}
