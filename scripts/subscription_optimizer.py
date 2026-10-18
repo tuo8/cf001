@@ -163,7 +163,10 @@ def load_nodes(value):
 def clean_nodes(nodes):
  used=set();seen=set();clean=[]
  for raw in nodes:
-  p=dict(raw);key=node_key(p)
+  p=dict(raw)
+  # Trojan requires TLS in Mihomo; some imported Clash YAML omits tls: true.
+  if str(p.get("type","")).lower()=="trojan":p["tls"]=True
+  key=node_key(p)
   if key in seen:continue
   seen.add(key)
   base=str(p.get("name") or "proxy")[:80];n=base;i=2
