@@ -226,6 +226,21 @@ def uri(s):
      if network=="httpupgrade":p["http-upgrade-opts"]={"path":path,"headers":{"Host":host}}
      elif network=="xhttp":p["xhttp-opts"]={"path":path,"host":host}
      else:p["h2-opts"]={"path":path,"host":host}
+   if k=="trojan":
+    network=q.get("type",["tcp"])[0].lower()
+    if network=="ws":
+     p.update(network="ws",**{"ws-opts":{"path":q.get("path",["/"])[0],"headers":{"Host":q.get("host",[u.hostname])[0]}}})
+    elif network=="grpc":
+     p["network"]="grpc"
+     service=q.get("serviceName",q.get("service_name",q.get("grpc-service-name",[""])))[0]
+     if service:p["grpc-opts"]={"grpc-service-name":service}
+    elif network in {"httpupgrade","xhttp","h2"}:
+     p["network"]=network
+     path=q.get("path",["/"])[0]
+     host=q.get("host",[u.hostname])[0]
+     if network=="httpupgrade":p["http-upgrade-opts"]={"path":path,"headers":{"Host":host}}
+     elif network=="xhttp":p["xhttp-opts"]={"path":path,"host":host}
+     else:p["h2-opts"]={"path":path,"host":host}
   else:
    p["type"]="socks5" if k in {"socks","socks5"} else "http"
    if u.username:p["username"]=unquote(u.username)

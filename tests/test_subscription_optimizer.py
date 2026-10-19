@@ -171,4 +171,12 @@ class Tests(unittest.TestCase):
   self.assertEqual(p["network"],"ws")
   self.assertEqual(p["ws-opts"],{"path":"/edge","headers":{"Host":"cdn.example.com"}})
 
+    def test_trojan_ws_uri_preserves_transport_host_and_path(self):
+        p=m.uri("trojan://secret@example.com:443?security=tls&sni=origin.example&type=ws&host=cdn.example.com&path=%2Fedge#TrojanWS")
+        self.assertEqual(p["type"],"trojan")
+        self.assertTrue(p["tls"])
+        self.assertEqual(p["servername"],"origin.example")
+        self.assertEqual(p["network"],"ws")
+        self.assertEqual(p["ws-opts"],{"path":"/edge","headers":{"Host":"cdn.example.com"}})
+
 if __name__=="__main__":unittest.main()
