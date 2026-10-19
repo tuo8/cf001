@@ -94,8 +94,8 @@ jobs:
           MIN_DOWNLOAD_SPEED_MBPS: '0.10'
           SORT_BY: speed
           TOP_N: '100'
-          # Serial probes performed better than two-way concurrency in the same-sample diagnostic.
-          PROBE_WORKERS: '1'
+          # Skip latency probes in relaxed mode; use modest concurrency to finish the full inventory within the job timeout.
+          PROBE_WORKERS: '4'
           DOWNLOAD_TEST_URL: ${{ vars.DOWNLOAD_TEST_URL || 'https://speed.cloudflare.com/__down?bytes=5242880' }}
           LATENCY_TEST_URLS: ${{ vars.LATENCY_TEST_URLS || '' }}
           DOWNLOAD_TEST_URLS: ${{ vars.DOWNLOAD_TEST_URLS || '' }}

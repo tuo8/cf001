@@ -363,19 +363,24 @@ def probe(p,binary,folder,precision=False):
    except OSError:time.sleep(.1)
   else:print(f"节点测试失败：type={p.get('type','unknown')}；阶段=mixed_port_start_timeout");return None
   px={"http":f"http://127.0.0.1:{port}","https":f"http://127.0.0.1:{port}"}
-  latency_urls=configured_urls("LATENCY_TEST_URLS",["https://cp.cloudflare.com/generate_204","https://www.gstatic.com/generate_204","https://www.google.com/generate_204"])
-  lat=None;lat_errors=[];deadline=time.monotonic()+12
-  for url in latency_urls:
-   if time.monotonic()>=deadline:break
-   stage="latency_request";t=time.monotonic();r=None
-   try:
-    r=requests.get(url,proxies=px,timeout=(3,4));elapsed=(time.monotonic()-t)*1000
-    if r.status_code in (200,204,301,302):lat=elapsed;break
-    lat_errors.append(f"HTTP{r.status_code}")
-   except Exception as exc:lat_errors.append(exception_label(exc))
-   finally:
-    if r is not None:r.close()
-  if lat is None:print(f"延迟探测失败：type={p.get('type','unknown')}；继续独立下载探测；错误类型={','.join(lat_errors)}")
+  relaxed=os.getenv("RELAXED_MODE","false").strip().lower() in {"1","true","yes","on"}
+  lat=None
+  if not relaxed:
+   latency_urls=configured_urls("LATENCY_TEST_URLS",["https://cp.cloudflare.com/generate_204","https://www.gstatic.com/generate_204","https://www.google.com/generate_204"])
+   lat_errors=[];deadline=time.monotonic()+12
+   for url in latency_urls:
+    if time.monotonic()>=deadline:break
+    stage="latency_request";t=time.monotonic();r=None
+    try:
+     r=requests.get(url,proxies=px,timeout=(3,4));elapsed=(time.monotonic()-t)*1000
+     if r.status_code in (200,204,301,302):lat=elapsed;break
+     lat_errors.append(f"HTTP{r.status_code}")
+    except Exception as exc:lat_errors.append(exception_label(exc))
+    finally:
+     if r is not None:r.close()
+   if lat is None:print(f"延迟探测失败：type={p.get('type','unknown')}；继续独立下载探测；错误类型={','.join(lat_errors)}")
+  else:
+   print("宽松测速模式：跳过延迟探测，按实际下载速度筛选")
   download_urls=download_test_urls()
   if precision:
    speeds=[]
