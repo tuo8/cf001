@@ -601,11 +601,23 @@ def main():
  print(f"地区筛选后节点数: {len(clean)}")
  if x.diagnostics_only:
   if not clean:print("诊断样本为空",file=sys.stderr);return 6
-  limit=min(16,len(clean))
-  if limit==1:indices=[0]
-  else:indices=sorted({round(i*(len(clean)-1)/(limit-1)) for i in range(limit)})
-  sample=[clean[i] for i in indices]
-  print(f"只读代理诊断：样本数={len(sample)}；候选总数={len(clean)}；不生成配置、不发布订阅")
+  limit=max(1,min(len(clean),int(os.getenv("DIAGNOSTICS_SAMPLE_SIZE","32"))))
+  # Stratify by proxy type so a large pool of one type cannot hide other types.
+  by_type={}
+  for p in clean:by_type.setdefault(str(p.get("type","unknown")).lower(),[]).append(p)
+  kinds=sorted(by_type)
+  quotas={k:limit//len(kinds)+(1 if i<limit%len(kinds) else 0) for i,k in enumerate(kinds)}
+  picked={}
+  for k in kinds:
+   group=by_type[k];count=min(quotas[k],len(group))
+   if count==1:picked[k]=[group[len(group)//2]]
+   elif count>1:picked[k]=[group[round(i*(len(group)-1)/(count-1))] for i in range(count)]
+   else:picked[k]=[]
+  sample=[]
+  for i in range(max((len(v) for v in picked.values()),default=0)):
+   for k in kinds:
+    if i<len(picked[k]) and len(sample)<limit:sample.append(picked[k][i])
+  print(f"只读代理诊断：样本数={len(sample)}；候选总数={len(clean)}；分类型抽样；不生成配置、不发布订阅")
   binary=shutil.which(os.getenv("MIHOMO_PATH","mihomo"))
   if not binary:print("找不到 Mihomo；无法执行诊断",file=sys.stderr);return 4
   for i,p in enumerate(sample,1):
