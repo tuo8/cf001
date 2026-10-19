@@ -90,7 +90,7 @@ jobs:
           NODE_INVENTORY_ONLY: ${{ github.event.inputs.inventory_only }}
           NODE_DIAGNOSTICS_ONLY: ${{ github.event.inputs.diagnostics_only }}
           NODE_ENDPOINT_CHECK_ONLY: ${{ github.event.inputs.endpoint_check_only }}
-          RELAXED_MODE: ${{ github.event.inputs.relaxed_mode }}
+          RELAXED_MODE: ${{ github.event_name == 'schedule' || inputs.relaxed_mode }}
           SORT_BY: speed
           TOP_N: '100'
           # Public/free proxy endpoints appear to reject concurrent probes; keep pressure low.
