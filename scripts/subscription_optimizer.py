@@ -374,7 +374,7 @@ def probe(p,binary,folder,precision=False):
    speed=statistics.median(speeds)
   else:
    relaxed=os.getenv("RELAXED_MODE","false").strip().lower() in {"1","true","yes","on"}
-   target_bytes=64*1024 if relaxed else 256*1024
+   target_bytes=16*1024 if relaxed else 256*1024
    timeout=12 if relaxed else 8
    stage="relaxed_download" if relaxed else "quick_download"
    speed=measure_download(px,download_urls,target_bytes,timeout)
