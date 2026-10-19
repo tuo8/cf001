@@ -40,7 +40,7 @@ on:
         required: false
         default: false
       relaxed_mode:
-        description: 宽松测速：单次下载 64 KiB，跳过双次 5 MiB 精测；仍只收录实际下载成功节点
+        description: 宽松测速：单次下载 64 KiB，最低速度 0.10 Mbps，跳过双次 5 MiB 精测
         type: boolean
         required: false
         default: false
@@ -91,6 +91,7 @@ jobs:
           NODE_DIAGNOSTICS_ONLY: ${{ github.event.inputs.diagnostics_only }}
           NODE_ENDPOINT_CHECK_ONLY: ${{ github.event.inputs.endpoint_check_only }}
           RELAXED_MODE: ${{ github.event_name == 'schedule' || inputs.relaxed_mode }}
+          MIN_DOWNLOAD_SPEED_MBPS: '0.10'
           SORT_BY: speed
           TOP_N: '100'
           # Serial probes performed better than two-way concurrency in the same-sample diagnostic.

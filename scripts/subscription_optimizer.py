@@ -389,11 +389,15 @@ def probe(p,binary,folder,precision=False):
    speed=statistics.median(speeds)
   else:
    relaxed=os.getenv("RELAXED_MODE","false").strip().lower() in {"1","true","yes","on"}
-   target_bytes=16*1024 if relaxed else 256*1024
+   target_bytes=64*1024 if relaxed else 256*1024
    timeout=12 if relaxed else 8
    stage="relaxed_download" if relaxed else "quick_download"
    speed=measure_download(px,download_urls,target_bytes,timeout)
    if speed is None:print(f"节点测试失败：type={p.get('type','unknown')}；阶段={stage}_failed");return None
+   if relaxed and speed < float(os.getenv("MIN_DOWNLOAD_SPEED_MBPS","0.10")):
+    floor=float(os.getenv("MIN_DOWNLOAD_SPEED_MBPS","0.10"))
+    print(f"节点测试失败：type={p.get('type','unknown')}；阶段=minimum_download_speed；实测={speed:.3f} Mbps；门槛={floor:.3f} Mbps")
+    return None
   return (lat,speed)
  except Exception as exc:print(f"节点测试失败：type={p.get('type','unknown')}；阶段={stage}；异常={exception_label(exc)}");return None
  finally:
