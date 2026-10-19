@@ -672,8 +672,33 @@ def main():
    quick_ranked=list(res)
    relaxed=os.getenv("RELAXED_MODE","false").strip().lower() in {"1","true","yes","on"}
    if relaxed:
-    print(f"宽松测速模式：跳过双次 5 MiB 精测；保留单次实际下载测速通过节点={len(quick_ranked)}")
+    # A small paired diagnostic showed that some VLESS nodes fail under concurrent
+    # probing but pass when retried serially. Retry a bounded, evenly spaced sample
+    # of failed VLESS nodes serially; never include a node unless real download passes.
     res=quick_ranked
+    target_count=x.top if x.top>0 else 100
+    if len(res)<target_count:
+     passed_keys={node_key(z[0]) for z in res}
+     failed_vless=[p for p in clean if str(p.get("type","")).lower()=="vless" and node_key(p) not in passed_keys]
+     retry_limit=max(0,int(os.getenv("SERIAL_FALLBACK_CANDIDATES","300")))
+     retry_count=min(len(failed_vless),retry_limit)
+     if retry_count:
+      if retry_count==1:retry_candidates=[failed_vless[len(failed_vless)//2]]
+      else:retry_candidates=[failed_vless[round(i*(len(failed_vless)-1)/(retry_count-1))] for i in range(retry_count)]
+      print(f"串行复测：并发初筛未通过的 VLESS 候选={len(failed_vless)}；本轮上限={len(retry_candidates)}；当前通过={len(res)}；目标={target_count}")
+      retried_passed=0
+      with tempfile.TemporaryDirectory() as retry_dir:
+       for i,p in enumerate(retry_candidates,1):
+        try:v=probe(p,binary,Path(retry_dir)/f"serial-fallback-{i}",False)
+        except Exception as exc:
+         print(f"串行复测异常：type=vless；异常={type(exc).__name__}");v=None
+        if v:
+         res.append((p,*v));retried_passed+=1
+        if i%25==0 or i==len(retry_candidates) or len(res)>=target_count:
+         print(f"串行复测进度：{i}/{len(retry_candidates)}；复测新增通过={retried_passed}；总通过={len(res)}")
+        if len(res)>=target_count:break
+     print(f"串行复测结束：新增通过={retried_passed}；最终候选={len(res)}")
+    print(f"宽松测速模式：跳过双次 5 MiB 精测；保留真实下载测速通过节点={len(res)}")
    else:
     target=x.top if x.top>0 else len(res);batch_size=max(200,target*2) if target else max(1,len(res))
     precise=[]
