@@ -622,17 +622,7 @@ def main():
   if not binary:print("找不到 Mihomo；无法执行诊断",file=sys.stderr);return 4
   for i,p in enumerate(sample,1):
    print(f"诊断样本 {i}/{len(sample)}：type={p.get('type','unknown')}；network={p.get('network','tcp')}；tls={'yes' if p.get('tls') else 'no'}；sni={'yes' if p.get('servername') else 'no'}；reality={'yes' if p.get('reality-opts') else 'no'}；port={p.get('port','?')}")
-  serial_passed=0
-  with tempfile.TemporaryDirectory() as d:
-   for i,p in enumerate(sample,1):
-    try:value=probe(p,binary,Path(d)/f"serial-{i}",False)
-    except Exception as exc:
-     print(f"串行诊断 {i}/{len(sample)}：ERROR；异常={type(exc).__name__}")
-     value=None
-    if value:
-     serial_passed+=1
-     print(f"串行诊断 {i}/{len(sample)}：PASS；延迟={format_latency(value[0])}；下载={value[1]:.2f} Mbps")
-    else:print(f"串行诊断 {i}/{len(sample)}：FAIL；type={p.get('type','unknown')}")
+  # Run parallel first in this round to separate concurrency effects from test-order/rate-limit effects.
   parallel_passed=0
   with tempfile.TemporaryDirectory() as d:
    with concurrent.futures.ThreadPoolExecutor(max_workers=min(2,len(sample))) as pool:
@@ -647,7 +637,18 @@ def main():
       parallel_passed+=1
       print(f"并发诊断 {i}/{len(sample)}：PASS；延迟={format_latency(value[0])}；下载={value[1]:.2f} Mbps")
      elif not future.exception():print(f"并发诊断 {i}/{len(sample)}：FAIL；type={p.get('type','unknown')}")
-  print(f"同批节点对照：样本={len(sample)}；串行通过={serial_passed}；并发通过={parallel_passed}")
+  serial_passed=0
+  with tempfile.TemporaryDirectory() as d:
+   for i,p in enumerate(sample,1):
+    try:value=probe(p,binary,Path(d)/f"serial-{i}",False)
+    except Exception as exc:
+     print(f"串行诊断 {i}/{len(sample)}：ERROR；异常={type(exc).__name__}")
+     value=None
+    if value:
+     serial_passed+=1
+     print(f"串行诊断 {i}/{len(sample)}：PASS；延迟={format_latency(value[0])}；下载={value[1]:.2f} Mbps")
+    else:print(f"串行诊断 {i}/{len(sample)}：FAIL；type={p.get('type','unknown')}")
+  print(f"同批节点对照：样本={len(sample)}；串行通过={serial_passed}；并发通过={parallel_passed}；顺序=先并发后串行")
   return 0
  res=[]
  if x.parse_only:res=[(p,None,None) for p in clean]
