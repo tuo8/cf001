@@ -94,8 +94,8 @@ jobs:
           MIN_DOWNLOAD_SPEED_MBPS: '0.10'
           SORT_BY: speed
           TOP_N: '100'
-          # Skip latency probes in relaxed mode; use modest concurrency to finish the full inventory within the job timeout.
-          PROBE_WORKERS: '4'
+          # Serial probing performed substantially better than 2-way concurrency in the paired diagnostic sample.
+          PROBE_WORKERS: ${{ vars.PROBE_WORKERS || '1' }}
           DOWNLOAD_TEST_URL: ${{ vars.DOWNLOAD_TEST_URL || 'https://speed.cloudflare.com/__down?bytes=5242880' }}
           LATENCY_TEST_URLS: ${{ vars.LATENCY_TEST_URLS || '' }}
           DOWNLOAD_TEST_URLS: ${{ vars.DOWNLOAD_TEST_URLS || '' }}
@@ -139,40 +139,22 @@ jobs:
           test -n "${CLOUDFLARE_ACCOUNT_ID}" || { echo "::error::Missing CLOUDFLARE_ACCOUNT_ID repository secret"; exit 2; }
           test -n "${CLOUDFLARE_KV_NAMESPACE_ID}" || { echo "::error::Missing CLOUDFLARE_KV_NAMESPACE_ID repository variable"; exit 2; }
           response="$RUNNER_TEMP/cloudflare-kv-response.json"
-          curl --fail --silent --show-error \
-            --request PUT \
-            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/values/clash-mi.yaml" \
-            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-            --header "Content-Type: application/yaml" \
-            --data-binary "@$RUNNER_TEMP/clash-mi.yaml" \
-            --output "$response"
+          curl --fail --silent --show-error --request PUT "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/values/clash-mi.yaml" --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" --header "Content-Type: application/yaml" --data-binary "@$RUNNER_TEMP/clash-mi.yaml" --output "$response"
           python - "$response" <<'PY'
           import json,sys
-          with open(sys.argv[1], encoding="utf-8") as f:
-              result=json.load(f)
-          if not result.get("success"):
-              errors=result.get("errors") or []
-              print("Cloudflare KV publish failed:", json.dumps(errors, ensure_ascii=False))
-              raise SystemExit(1)
-          print("Cloudflare KV publish succeeded.")
+          result=json.load(open(sys.argv[1],encoding='utf-8'))
+          if not result.get('success'):
+              print('Cloudflare KV publish failed:',json.dumps(result.get('errors') or [],ensure_ascii=False));raise SystemExit(1)
+          print('Cloudflare KV publish succeeded.')
           PY
           v2response="$RUNNER_TEMP/cloudflare-kv-v2rayn-response.json"
-          curl --fail --silent --show-error \
-            --request PUT \
-            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/values/v2rayn.txt" \
-            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-            --header "Content-Type: text/plain" \
-            --data-binary "@$RUNNER_TEMP/v2rayn.txt" \
-            --output "$v2response"
+          curl --fail --silent --show-error --request PUT "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/values/v2rayn.txt" --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" --header "Content-Type: text/plain" --data-binary "@$RUNNER_TEMP/v2rayn.txt" --output "$v2response"
           python - "$v2response" <<'PY'
           import json,sys
-          with open(sys.argv[1], encoding="utf-8") as f:
-              result=json.load(f)
-          if not result.get("success"):
-              errors=result.get("errors") or []
-              print("Cloudflare KV v2rayN publish failed:", json.dumps(errors, ensure_ascii=False))
-              raise SystemExit(1)
-          print("Cloudflare KV v2rayN publish succeeded.")
+          result=json.load(open(sys.argv[1],encoding='utf-8'))
+          if not result.get('success'):
+              print('Cloudflare KV v2rayN publish failed:',json.dumps(result.get('errors') or [],ensure_ascii=False));raise SystemExit(1)
+          print('Cloudflare KV v2rayN publish succeeded.')
           PY
       - name: Upload artifact only for private repositories
         if: ${{ github.event.repository.private == true }}
