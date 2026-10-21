@@ -40,7 +40,7 @@ on:
         required: false
         default: false
       relaxed_mode:
-        description: 宽松测速：单次下载 64 KiB，最低速度 0.10 Mbps，跳过双次 5 MiB 精测
+        description: 宽松初筛：跳过延迟探测，初筛下载 64 KiB；最终入选仍须双次 5 MiB 精测
         type: boolean
         required: false
         default: false
@@ -93,7 +93,7 @@ jobs:
           RELAXED_MODE: ${{ github.event_name == 'schedule' || inputs.relaxed_mode }}
           MIN_DOWNLOAD_SPEED_MBPS: '0.10'
           SORT_BY: speed
-          TOP_N: '100'
+          TOP_N: '20'
           # A serial full run hit the 90-minute job timeout after only 700/2820 candidates.
           # The paired 16-node sample is too small to justify serializing thousands of probes.
           PROBE_WORKERS: ${{ vars.PROBE_WORKERS || '4' }}

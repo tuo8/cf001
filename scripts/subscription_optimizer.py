@@ -672,9 +672,8 @@ def main():
    quick_ranked=list(res)
    relaxed=os.getenv("RELAXED_MODE","false").strip().lower() in {"1","true","yes","on"}
    if relaxed:
-    # A small paired diagnostic showed that some VLESS nodes fail under concurrent
-    # probing but pass when retried serially. Retry a bounded, evenly spaced sample
-    # of failed VLESS nodes serially; never include a node unless real download passes.
+    # Keep the fast 64 KiB pass as a candidate screen only. Final nodes must
+    # pass two independent 5 MiB downloads; tiny bursts never qualify alone.
     res=quick_ranked
     target_count=x.top if x.top>0 else 100
     if len(res)<target_count:
@@ -692,13 +691,32 @@ def main():
         try:v=probe(p,binary,Path(retry_dir)/f"serial-fallback-{i}",False)
         except Exception as exc:
          print(f"串行复测异常：type=vless；异常={type(exc).__name__}");v=None
-        if v:
-         res.append((p,*v));retried_passed+=1
+        if v:res.append((p,*v));retried_passed+=1
         if i%25==0 or i==len(retry_candidates) or len(res)>=target_count:
          print(f"串行复测进度：{i}/{len(retry_candidates)}；复测新增通过={retried_passed}；总通过={len(res)}")
         if len(res)>=target_count:break
-     print(f"串行复测结束：新增通过={retried_passed}；最终候选={len(res)}")
-    print(f"宽松测速模式：跳过双次 5 MiB 精测；保留真实下载测速通过节点={len(res)}")
+      print(f"串行复测结束：新增通过={retried_passed}；最终候选={len(res)}")
+    res.sort(key=lambda z:(z[2] is None,-(z[2] or 0),z[1] is None,z[1] or 1e9))
+    target=x.top if x.top>0 else len(res)
+    batch_size=max(60,target*3) if target else max(1,len(res))
+    precise=[]
+    for batch_start in range(0,len(res),batch_size):
+     batch=res[batch_start:batch_start+batch_size]
+     print(f"宽松初筛后开始双次下载精测：候选 {batch_start+1}-{batch_start+len(batch)} / {len(res)}；每节点 2 次 5 MiB")
+     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1,min(2,workers))) as pool:
+      futures={pool.submit(probe,z[0],binary,Path(d)/f"relaxed-precision-{batch_start+i}",True):z[0] for i,z in enumerate(batch)}
+      completed=0
+      for future in concurrent.futures.as_completed(futures):
+       p=futures[future]
+       try:v=future.result()
+       except Exception as exc:print(f"宽松初筛后精测异常：type={p.get('type','unknown')}；异常={type(exc).__name__}");v=None
+       if v:precise.append((p,*v))
+       completed+=1
+       if completed%10==0 or completed==len(batch):print(f"双次精测进度: {batch_start+completed}/{len(res)}；精测合格={len(precise)}")
+     precise.sort(key=lambda z:(z[2] is None,-(z[2] or 0),z[1] is None,z[1] or 1e9))
+     if x.top>0 and len(precise)>=x.top:break
+    res=precise
+    print(f"宽松初筛后双次 5 MiB 精测合格={len(res)}；输出目标={target}")
    else:
     target=x.top if x.top>0 else len(res);batch_size=max(200,target*2) if target else max(1,len(res))
     precise=[]
