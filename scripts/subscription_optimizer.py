@@ -678,13 +678,13 @@ def main():
     target_count=x.top if x.top>0 else 100
     if len(res)<target_count:
      passed_keys={node_key(z[0]) for z in res}
-     failed_vless=[p for p in clean if str(p.get("type","")).lower()=="vless" and node_key(p) not in passed_keys]
-     retry_limit=max(0,int(os.getenv("SERIAL_FALLBACK_CANDIDATES","300")))
-     retry_count=min(len(failed_vless),retry_limit)
+     failed_candidates=[p for p in clean if node_key(p) not in passed_keys]
+     retry_limit=max(0,int(os.getenv("SERIAL_FALLBACK_CANDIDATES","120")))
+     retry_count=min(len(failed_candidates),retry_limit)
      if retry_count:
-      if retry_count==1:retry_candidates=[failed_vless[len(failed_vless)//2]]
-      else:retry_candidates=[failed_vless[round(i*(len(failed_vless)-1)/(retry_count-1))] for i in range(retry_count)]
-      print(f"串行复测：并发初筛未通过的 VLESS 候选={len(failed_vless)}；本轮上限={len(retry_candidates)}；当前通过={len(res)}；目标={target_count}")
+      if retry_count==1:retry_candidates=[failed_candidates[len(failed_candidates)//2]]
+      else:retry_candidates=[failed_candidates[round(i*(len(failed_candidates)-1)/(retry_count-1))] for i in range(retry_count)]
+      print(f"串行复测：并发初筛未通过的全部类型候选={len(failed_candidates)}；本轮上限={len(retry_candidates)}；当前通过={len(res)}；目标={target_count}")
       retried_passed=0
       with tempfile.TemporaryDirectory() as retry_dir:
        for i,p in enumerate(retry_candidates,1):
@@ -703,7 +703,7 @@ def main():
     for batch_start in range(0,len(res),batch_size):
      batch=res[batch_start:batch_start+batch_size]
      print(f"宽松初筛后开始双次下载精测：候选 {batch_start+1}-{batch_start+len(batch)} / {len(res)}；每节点 2 次 5 MiB")
-     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1,min(2,workers))) as pool:
+     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
       futures={pool.submit(probe,z[0],binary,Path(d)/f"relaxed-precision-{batch_start+i}",True):z[0] for i,z in enumerate(batch)}
       completed=0
       for future in concurrent.futures.as_completed(futures):
@@ -723,7 +723,7 @@ def main():
     for batch_start in range(0,len(quick_ranked),batch_size):
      batch=quick_ranked[batch_start:batch_start+batch_size]
      print(f"开始下载精测：候选 {batch_start+1}-{batch_start+len(batch)} / {len(quick_ranked)}；每节点最多 2 次")
-     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1,min(4,workers))) as pool:
+     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
       futures={pool.submit(probe,z[0],binary,Path(d)/f"precision-{batch_start+i}",True):z[0] for i,z in enumerate(batch)}
       completed=0
       for future in concurrent.futures.as_completed(futures):
