@@ -26,6 +26,28 @@ CA
         self.assertEqual(proxy["username"], "vpn")
         self.assertEqual(proxy["password"], "vpn")
 
+    def test_bare_comp_lzo_is_preserved(self):
+        config = """proto udp
+remote 198.51.100.2 1194
+comp-lzo
+<ca>
+CA
+</ca>
+"""
+        proxy = module.parse_profile(config, {"CountryLong": "Japan"})["proxy"]
+        self.assertEqual(proxy["comp-lzo"], "yes")
+
+    def test_comp_lzo_explicit_value_is_preserved(self):
+        config = """proto udp
+remote 198.51.100.3 1194
+comp-lzo no
+<ca>
+CA
+</ca>
+"""
+        proxy = module.parse_profile(config, {"CountryLong": "Japan"})["proxy"]
+        self.assertEqual(proxy["comp-lzo"], "no")
+
     def test_udp_tls_auth(self):
         config = """proto udp
 remote 198.51.100.1 1194

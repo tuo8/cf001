@@ -45,6 +45,7 @@ jobs:
         env:
           MIHOMO_PATH: ${{ runner.temp }}/mihomo
           VPNGATE_PROBE_WORKERS: "3"
+          VPNGATE_DIAGNOSTICS_DIR: ${{ runner.temp }}/vpngate-diagnostics
         run: |
           set -euo pipefail
           if [[ "${{ inputs.parse_only }}" == "true" ]]; then
@@ -87,3 +88,11 @@ jobs:
               raise SystemExit(1)
           print("Published VPN Gate subscription to KV.")
           PY
+      - name: Upload failed-node diagnostics
+        if: ${{ always() && !inputs.parse_only }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: vpngate-mihomo-diagnostics-${{ github.run_id }}
+          path: ${{ runner.temp }}/vpngate-diagnostics/
+          if-no-files-found: ignore
+          retention-days: 7

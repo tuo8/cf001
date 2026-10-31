@@ -57,8 +57,11 @@ def parse_profile(config, row):
     if block:
         return None
 
+    def occurrences(key):
+        return [value for name, value in directives if name == key]
+
     def values(key):
-        return [value for name, value in directives if name == key and value]
+        return [value for value in occurrences(key) if value]
 
     remotes = values("remote")
     if not remotes or len(remotes[0]) < 2 or not blocks.get("ca"):
@@ -110,11 +113,17 @@ def parse_profile(config, row):
             for item in re.split(r"[:,\s]+", " ".join(data_ciphers[0]))
             if item
         ]
-    compression = values("comp-lzo")
+    compression = occurrences("comp-lzo")
     if compression:
-        node["comp-lzo"] = compression[0][0].lower()
+        # OpenVPN accepts both "comp-lzo" and "comp-lzo yes".
+        node["comp-lzo"] = compression[0][0].lower() if compression[0] else "yes"
     elif values("compress"):
         node["comp-lzo"] = "yes"
+
+    # Mihomo's OpenVPN outbound has no tls-cipher equivalent. Make this
+    # compatibility limitation visible instead of silently dropping it.
+    if values("tls-cipher"):
+        print(f"兼容性警告 {label}: profile contains tls-cipher; Mihomo outbound cannot map it")
 
     return {"proxy": node, "country": country}
 
@@ -166,20 +175,28 @@ def free_port():
         return sock.getsockname()[1]
 
 
+def _log_tail(path, limit=5000):
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")[-limit:]
+    except OSError:
+        return "(Mihomo log unavailable)"
+
+
 def start_node(node, binary, folder):
     folder.mkdir(parents=True, exist_ok=True)
     port = free_port()
     config = {
         "mixed-port": port,
         "mode": "rule",
-        "log-level": "warning",
+        "log-level": "debug",
         "proxies": [node],
         "proxy-groups": [{"name": "TEST", "type": "select", "proxies": [node["name"]]}],
         "rules": ["MATCH,TEST"],
     }
     config_path = folder / "test.yaml"
     config_path.write_text(yaml.safe_dump(config, allow_unicode=True), encoding="utf-8")
-    log = (folder / "mihomo.log").open("w", encoding="utf-8")
+    log_path = folder / "mihomo.log"
+    log = log_path.open("w", encoding="utf-8")
     process = subprocess.Popen(
         [binary, "-f", str(config_path)],
         stdout=log,
@@ -189,15 +206,22 @@ def start_node(node, binary, folder):
     while time.monotonic() < deadline:
         if process.poll() is not None:
             log.flush()
-            raise RuntimeError("mihomo startup failed")
+            log.close()
+            raise RuntimeError(f"mihomo startup failed: {_log_tail(log_path)}")
         try:
             with socket.create_connection(("127.0.0.1", port), timeout=0.2):
                 return process, log, port
         except OSError:
             time.sleep(0.1)
     process.terminate()
+    try:
+        process.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=2)
+    log.flush()
     log.close()
-    raise RuntimeError("mihomo startup timeout")
+    raise RuntimeError(f"mihomo startup timeout: {_log_tail(log_path)}")
 
 
 def stop_node(process, log):
@@ -238,34 +262,60 @@ def check_connectivity(proxy_url):
 
 def probe(item, binary, folder):
     process = log = None
+    error_message = None
     try:
         process, log, port = start_node(item["proxy"], binary, folder)
-        return check_connectivity(f"http://127.0.0.1:{port}")
+        if not check_connectivity(f"http://127.0.0.1:{port}"):
+            error_message = "HTTP connectivity probes failed for both configured endpoints"
+            return False
+        return True
     except Exception as error:
-        print(f"连通性检查失败 {item['proxy']['name']}: {type(error).__name__}")
+        error_message = f"{type(error).__name__}: {error}"
         return False
     finally:
         if process is not None:
             stop_node(process, log)
+        if error_message:
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / "failure.txt").write_text(
+                f"node: {item['proxy']['name']}\n"
+                f"server: {item['proxy']['server']}:{item['proxy']['port']}\n"
+                f"reason: {error_message}\n",
+                encoding="utf-8",
+            )
+            print(f"连通性检查失败 {item['proxy']['name']}: {error_message}")
+        else:
+            shutil.rmtree(folder, ignore_errors=True)
+
+
+def _run_probes(items, binary, workers, diagnostic_root):
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(workers, 5))) as pool:
+        jobs = {
+            pool.submit(probe, item, binary, diagnostic_root / str(index)): (index, item)
+            for index, item in enumerate(items)
+        }
+        passed_by_index = {}
+        for future in concurrent.futures.as_completed(jobs):
+            index, item = jobs[future]
+            try:
+                if future.result():
+                    passed_by_index[index] = item
+                    print(f"连通性通过: {item['country']} | {item['proxy']['name']}")
+            except Exception as error:
+                print(f"probe error {item['proxy']['name']}: {type(error).__name__}: {error}")
+    return [passed_by_index[index] for index in sorted(passed_by_index)]
 
 
 def test_many(items, binary, workers):
+    configured_root = os.getenv("VPNGATE_DIAGNOSTICS_DIR")
+    if configured_root:
+        diagnostic_root = Path(configured_root)
+        diagnostic_root.mkdir(parents=True, exist_ok=True)
+        print(f"失败节点诊断日志目录: {diagnostic_root}")
+        return _run_probes(items, binary, workers, diagnostic_root)
+
     with tempfile.TemporaryDirectory(prefix="vpngate-") as temporary:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(workers, 5))) as pool:
-            jobs = {
-                pool.submit(probe, item, binary, Path(temporary) / str(index)): (index, item)
-                for index, item in enumerate(items)
-            }
-            passed_by_index = {}
-            for future in concurrent.futures.as_completed(jobs):
-                index, item = jobs[future]
-                try:
-                    if future.result():
-                        passed_by_index[index] = item
-                        print(f"连通性通过: {item['country']} | {item['proxy']['name']}")
-                except Exception as error:
-                    print(f"probe error: {type(error).__name__}")
-    return [passed_by_index[index] for index in sorted(passed_by_index)]
+        return _run_probes(items, binary, workers, Path(temporary))
 
 
 def write_yaml(results, path):
