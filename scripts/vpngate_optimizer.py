@@ -140,7 +140,7 @@ def parse_profile(config, row):
         return None
 
     country = (row.get("CountryLong") or row.get("CountryShort") or "Unknown").strip()
-    label = re.sub(r"[^A-Za-z0-9._ -]", "", f"VPNGate {country} {row.get('IP') or host}")[:80]
+    label = re.sub(r"[^A-Za-z0-9._ -]", "", f"VPNGate {country} {row.get('IP') or host} {port} {proto}")[:80]
     node = {
         "name": label,
         "type": "openvpn",
