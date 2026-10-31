@@ -119,6 +119,14 @@ KEY
         self.assertEqual(proxy["ip"], "172.16.0.2")
         self.assertEqual(proxy["peers"][0]["reserved"], [1, 2, 3])
 
+    def test_warp_reserved_defaults_to_current_registration(self):
+        key = base64.b64encode(bytes(range(32))).decode()
+        config = module.load_warp_config(__import__("json").dumps({
+            "private_key": key, "peer_public_key": key, "ipv4": "172.16.0.2"
+        }))
+        self.assertEqual(config["reserved"], [211, 165, 3])
+        self.assertEqual(module.build_warp_proxy(config)["peers"][0]["reserved"], [211, 165, 3])
+
     def test_missing_warp_config_fails_closed(self):
         with self.assertRaisesRegex(RuntimeError, "Missing VPNGATE_WARP_CONFIG"):
             module.load_warp_config("")

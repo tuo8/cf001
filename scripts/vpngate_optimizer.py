@@ -25,7 +25,9 @@ CONNECTIVITY_URLS = (
 )
 DOWNLOAD_TEST_URL = "https://speed.cloudflare.com/__down?bytes=1000000"
 DOWNLOAD_TEST_BYTES = 1_000_000
-
+# Reserved bytes decoded from the current wgcf registration client_id.
+# Refresh this value if the WARP registration is replaced.
+DEFAULT_WARP_RESERVED = [211, 165, 3]
 
 
 def load_warp_config(raw=None):
@@ -61,7 +63,7 @@ def load_warp_config(raw=None):
         raise ValueError("Invalid WARP endpoint")
     if not 1 <= port <= 65535 or not 576 <= mtu <= 9000 or not 0 <= keepalive <= 65535:
         raise ValueError("Invalid WARP port, MTU, or keepalive")
-    reserved = config.get("reserved")
+    reserved = config["reserved"] if "reserved" in config else DEFAULT_WARP_RESERVED.copy()
     if reserved is not None and (not isinstance(reserved, list) or len(reserved) != 3 or any(type(v) is not int or not 0 <= v <= 255 for v in reserved)):
         raise ValueError("WARP reserved must be a three-byte integer array")
     return {"private_key": config["private_key"], "peer_public_key": config["peer_public_key"],
