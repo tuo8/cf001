@@ -56,7 +56,10 @@ def load_warp_config(raw=None):
     if address.version != 4:
         raise ValueError("WARP ipv4 must be IPv4")
     endpoint = config.get("endpoint", "engage.cloudflareclient.com")
-    port = int(config.get("port", 2408))
+    # A workflow-level override tests Cloudflare's documented fallback WireGuard ports
+    # without asking the user to edit or re-upload the private WARP secret.
+    port_override = os.getenv("VPNGATE_WARP_PORT")
+    port = int(port_override) if port_override else int(config.get("port", 2408))
     mtu = int(config.get("mtu", 1280))
     keepalive = int(config.get("keepalive", 25))
     if not isinstance(endpoint, str) or not endpoint or any(ch.isspace() for ch in endpoint):
