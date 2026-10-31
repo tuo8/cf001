@@ -63,7 +63,7 @@ def parse_csv(text):
     rows=csv.DictReader([lines[i].lstrip("#")]+lines[i+1:]);out=[];seen=set()
     for row in rows:
         if not row.get("HostName") or row["HostName"].startswith("*"):continue
-        item=parse_profile(decode_config(row.get("OpenVPN_Config")),row)
+        item=parse_profile(decode_config(row.get("OpenVPN_ConfigData_Base64") or row.get("OpenVPN_Config")),row)
         if item:
             p=item["proxy"];key=(p["server"],p["port"],p["proto"])
             if key not in seen:seen.add(key);out.append(item)

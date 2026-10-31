@@ -28,7 +28,7 @@ KEY
   self.assertTrue(p["udp"]);self.assertEqual(p["key-direction"],"1");self.assertIn("KEY",p["tls-auth"])
  def test_csv(self):
   c="proto tcp-client\nremote 203.0.113.2 443\n<ca>\nCA\n</ca>\n";b=base64.b64encode(c.encode()).decode()
-  raw="*vpn_servers\n#HostName,IP,Score,Ping,Speed,CountryLong,CountryShort,NumVpnSessions,Uptime,TotalUsers,TotalTraffic,LogType,Operator,Message,OpenVPN_Config\nvpn1,203.0.113.2,90,10,1000,Japan,JP,1,2,3,4,0,op,msg,"+b+"\n*vpn_servers_end\n"
+  raw="*vpn_servers\n#HostName,IP,Score,Ping,Speed,CountryLong,CountryShort,NumVpnSessions,Uptime,TotalUsers,TotalTraffic,LogType,Operator,Message,OpenVPN_ConfigData_Base64\nvpn1,203.0.113.2,90,10,1000,Japan,JP,1,2,3,4,0,op,msg,"+b+"\n*vpn_servers_end\n"
   x=m.parse_csv(raw);self.assertEqual(len(x),1);self.assertEqual(x[0]["ping"],10)
  def test_reject_incomplete(self):
   self.assertIsNone(m.parse_profile("proto tcp\nremote x 443\n",{}))
