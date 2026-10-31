@@ -85,13 +85,26 @@ KEY
         self.assertIsNone(module.parse_profile("proto tcp\nremote x 443\n", {}))
         self.assertIsNone(module.parse_profile("proto tcp\n<ca>\nCA\n</ca>", {}))
 
-    def test_all_nodes_are_kept_in_site_order_without_truncation(self):
+    def test_unmeasured_nodes_keep_input_order(self):
         items = [{"proxy": {"name": f"node-{index}"}} for index in range(75)]
         ranked = module.rank(items)
         self.assertEqual(len(ranked), 75)
         self.assertEqual(
             [item["proxy"]["name"] for item in ranked],
             [item["proxy"]["name"] for item in items],
+        )
+
+    def test_rank_combines_latency_and_download_speed(self):
+        items = [
+            {"proxy": {"name": "slow"}, "latency_ms": 100, "download_mbps": 20},
+            {"proxy": {"name": "balanced"}, "latency_ms": 50, "download_mbps": 50},
+            {"proxy": {"name": "fast"}, "latency_ms": 25, "download_mbps": 100},
+            {"proxy": {"name": "unmeasured"}},
+        ]
+        ranked = module.rank(items)
+        self.assertEqual(
+            [item["proxy"]["name"] for item in ranked],
+            ["fast", "balanced", "slow", "unmeasured"],
         )
 
 
