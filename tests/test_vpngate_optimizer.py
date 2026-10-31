@@ -94,6 +94,43 @@ KEY
             [item["proxy"]["name"] for item in items],
         )
 
+
+    def test_warp_config_and_proxy(self):
+        key = base64.b64encode(bytes(range(32))).decode()
+        config = module.load_warp_config(__import__("json").dumps({
+            "private_key": key, "peer_public_key": key, "ipv4": "172.16.0.2",
+            "reserved": [1, 2, 3]
+        }))
+        proxy = module.build_warp_proxy(config)
+        self.assertEqual(proxy["type"], "wireguard")
+        self.assertEqual(proxy["ip"], "172.16.0.2")
+        self.assertEqual(proxy["peers"][0]["reserved"], [1, 2, 3])
+
+    def test_missing_warp_config_fails_closed(self):
+        with self.assertRaisesRegex(RuntimeError, "Missing VPNGATE_WARP_CONFIG"):
+            module.load_warp_config("")
+
+    def test_invalid_warp_key_rejected(self):
+        with self.assertRaisesRegex(ValueError, "32 bytes"):
+            module.load_warp_config(__import__("json").dumps({
+                "private_key": "YQ==", "peer_public_key": "YQ==", "ipv4": "172.16.0.2"
+            }))
+
+
+    def test_output_contains_warp_and_chains_every_openvpn(self):
+        key = base64.b64encode(bytes(range(32))).decode()
+        cfg = module.load_warp_config(__import__("json").dumps({
+            "private_key": key, "peer_public_key": key, "ipv4": "172.16.0.2"
+        }))
+        warp = module.build_warp_proxy(cfg)
+        item = {"proxy": {"name": "VPN Japan", "type": "openvpn", "server": "198.51.100.1", "port": 1194}}
+        with __import__("tempfile").TemporaryDirectory() as tmp:
+            doc = module.write_yaml([item], Path(tmp) / "out.yaml", warp)
+            parsed = __import__("yaml").safe_load((Path(tmp) / "out.yaml").read_text())
+        self.assertEqual(parsed["proxies"][0]["type"], "wireguard")
+        self.assertEqual(parsed["proxies"][1]["dialer-proxy"], "WARP")
+        self.assertEqual(doc["proxy-groups"][0]["proxies"], ["VPN Japan"])
+
     def test_connectivity_accepts_success_status(self):
         response = Mock(status_code=204)
         with patch.object(module.requests, "get", return_value=response):

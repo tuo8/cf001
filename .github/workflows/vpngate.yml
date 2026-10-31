@@ -46,6 +46,7 @@ jobs:
           MIHOMO_PATH: ${{ runner.temp }}/mihomo
           VPNGATE_PROBE_WORKERS: "3"
           VPNGATE_DIAGNOSTICS_DIR: ${{ runner.temp }}/vpngate-diagnostics
+          VPNGATE_WARP_CONFIG: ${{ secrets.VPNGATE_WARP_CONFIG }}
         run: |
           set -euo pipefail
           if [[ "${{ inputs.parse_only }}" == "true" ]]; then
@@ -57,10 +58,13 @@ jobs:
           python - "$RUNNER_TEMP/vpngate-clash-mi.yaml" <<'PY'
           import sys, yaml
           data = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
-          assert data.get("proxies") and all(p.get("type") == "openvpn" for p in data["proxies"])
-          names = {p["name"] for p in data["proxies"]}
+          proxies = data.get("proxies", [])
+          assert proxies and proxies[0].get("name") == "WARP" and proxies[0].get("type") == "wireguard"
+          openvpn = proxies[1:]
+          assert openvpn and all(p.get("type") == "openvpn" and p.get("dialer-proxy") == "WARP" for p in openvpn)
+          names = {p["name"] for p in proxies}
           assert all(n in names for group in data["proxy-groups"] for n in group.get("proxies", []))
-          print("Validated OpenVPN nodes:", len(names))
+          print("Validated WARP + OpenVPN nodes:", len(openvpn))
           PY
       - name: Publish to Cloudflare KV
         if: ${{ success() && !inputs.parse_only }}

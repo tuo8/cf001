@@ -4,6 +4,8 @@ import argparse
 import base64
 import concurrent.futures
 import csv
+import ipaddress
+import json
 import os
 import re
 import shutil
@@ -21,6 +23,58 @@ CONNECTIVITY_URLS = (
     "https://cp.cloudflare.com/generate_204",
     "https://www.gstatic.com/generate_204",
 )
+
+
+
+def load_warp_config(raw=None):
+    """Load a private WARP WireGuard profile from the Actions secret JSON."""
+    raw = os.getenv("VPNGATE_WARP_CONFIG", "") if raw is None else raw
+    if not raw:
+        raise RuntimeError("Missing VPNGATE_WARP_CONFIG; refusing direct-mode fallback or publication")
+    try:
+        config = json.loads(raw)
+    except (TypeError, json.JSONDecodeError) as error:
+        raise ValueError("VPNGATE_WARP_CONFIG must be valid JSON") from error
+    required = ("private_key", "peer_public_key", "ipv4")
+    if any(not isinstance(config.get(key), str) or not config[key].strip() for key in required):
+        raise ValueError("VPNGATE_WARP_CONFIG is missing private_key, peer_public_key, or ipv4")
+    for key in ("private_key", "peer_public_key"):
+        try:
+            decoded = base64.b64decode(config[key], validate=True)
+        except Exception as error:
+            raise ValueError(f"Invalid base64 in WARP {key}") from error
+        if len(decoded) != 32:
+            raise ValueError(f"WARP {key} must decode to 32 bytes")
+    try:
+        address = ipaddress.ip_interface(config["ipv4"] if "/" in config["ipv4"] else config["ipv4"] + "/32")
+    except ValueError as error:
+        raise ValueError("WARP ipv4 must be a valid IPv4 interface address") from error
+    if address.version != 4:
+        raise ValueError("WARP ipv4 must be IPv4")
+    endpoint = config.get("endpoint", "engage.cloudflareclient.com")
+    port = int(config.get("port", 2408))
+    mtu = int(config.get("mtu", 1280))
+    keepalive = int(config.get("keepalive", 25))
+    if not isinstance(endpoint, str) or not endpoint or any(ch.isspace() for ch in endpoint):
+        raise ValueError("Invalid WARP endpoint")
+    if not 1 <= port <= 65535 or not 576 <= mtu <= 9000 or not 0 <= keepalive <= 65535:
+        raise ValueError("Invalid WARP port, MTU, or keepalive")
+    reserved = config.get("reserved")
+    if reserved is not None and (not isinstance(reserved, list) or len(reserved) != 3 or any(type(v) is not int or not 0 <= v <= 255 for v in reserved)):
+        raise ValueError("WARP reserved must be a three-byte integer array")
+    return {"private_key": config["private_key"], "peer_public_key": config["peer_public_key"],
+            "ipv4": str(address.ip), "endpoint": endpoint, "port": port, "mtu": mtu,
+            "keepalive": keepalive, "reserved": reserved}
+
+
+def build_warp_proxy(config):
+    peer = {"server": config["endpoint"], "port": config["port"],
+            "public-key": config["peer_public_key"], "allowed-ips": ["0.0.0.0/0"],
+            "persistent-keepalive": config["keepalive"]}
+    if config.get("reserved") is not None:
+        peer["reserved"] = config["reserved"]
+    return {"name": "WARP", "type": "wireguard", "private-key": config["private_key"],
+            "ip": config["ipv4"], "udp": True, "mtu": config["mtu"], "peers": [peer]}
 
 
 def decode_config(value):
@@ -182,14 +236,14 @@ def _log_tail(path, limit=5000):
         return "(Mihomo log unavailable)"
 
 
-def start_node(node, binary, folder):
+def start_node(node, binary, folder, warp_proxy):
     folder.mkdir(parents=True, exist_ok=True)
     port = free_port()
     config = {
         "mixed-port": port,
         "mode": "rule",
         "log-level": "debug",
-        "proxies": [node],
+        "proxies": [warp_proxy, {**node, "dialer-proxy": "WARP"}],
         "proxy-groups": [{"name": "TEST", "type": "select", "proxies": [node["name"]]}],
         "rules": ["MATCH,TEST"],
     }
@@ -260,11 +314,11 @@ def check_connectivity(proxy_url):
     return False
 
 
-def probe(item, binary, folder):
+def probe(item, binary, folder, warp_proxy):
     process = log = None
     error_message = None
     try:
-        process, log, port = start_node(item["proxy"], binary, folder)
+        process, log, port = start_node(item["proxy"], binary, folder, warp_proxy)
         if not check_connectivity(f"http://127.0.0.1:{port}"):
             error_message = "HTTP connectivity probes failed for both configured endpoints"
             return False
@@ -288,10 +342,10 @@ def probe(item, binary, folder):
             shutil.rmtree(folder, ignore_errors=True)
 
 
-def _run_probes(items, binary, workers, diagnostic_root):
+def _run_probes(items, binary, workers, diagnostic_root, warp_proxy):
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(workers, 5))) as pool:
         jobs = {
-            pool.submit(probe, item, binary, diagnostic_root / str(index)): (index, item)
+            pool.submit(probe, item, binary, diagnostic_root / str(index), warp_proxy): (index, item)
             for index, item in enumerate(items)
         }
         passed_by_index = {}
@@ -306,24 +360,24 @@ def _run_probes(items, binary, workers, diagnostic_root):
     return [passed_by_index[index] for index in sorted(passed_by_index)]
 
 
-def test_many(items, binary, workers):
+def test_many(items, binary, workers, warp_proxy):
     configured_root = os.getenv("VPNGATE_DIAGNOSTICS_DIR")
     if configured_root:
         diagnostic_root = Path(configured_root)
         diagnostic_root.mkdir(parents=True, exist_ok=True)
         print(f"失败节点诊断日志目录: {diagnostic_root}")
-        return _run_probes(items, binary, workers, diagnostic_root)
+        return _run_probes(items, binary, workers, diagnostic_root, warp_proxy)
 
     with tempfile.TemporaryDirectory(prefix="vpngate-") as temporary:
-        return _run_probes(items, binary, workers, Path(temporary))
+        return _run_probes(items, binary, workers, Path(temporary), warp_proxy)
 
 
-def write_yaml(results, path):
-    nodes = [item["proxy"] for item in results]
+def write_yaml(results, path, warp_proxy):
+    nodes = [{**item["proxy"], "dialer-proxy": "WARP"} for item in results]
     if not nodes:
         raise RuntimeError("zero reachable nodes; refusing to publish empty subscription")
     document = {
-        "proxies": nodes,
+        "proxies": [warp_proxy] + nodes,
         "proxy-groups": [
             {"name": "VPN Gate 优选", "type": "select", "proxies": [node["name"] for node in nodes]}
         ],
@@ -360,13 +414,17 @@ def main():
             print("Parse-only: no connectivity checks, YAML output, or publishing.")
             return 0
 
+        warp_config = load_warp_config()
+        warp_proxy = build_warp_proxy(warp_config)
+        print("WARP WireGuard configuration validated; testing VPN Gate nodes through WARP.")
+
         binary = shutil.which(os.getenv("MIHOMO_PATH", "mihomo"))
         if not binary:
             raise RuntimeError("Mihomo binary not found")
 
-        reachable = test_many(candidates, binary, args.workers)
-        document = write_yaml(reachable, args.output)
-        print(f"Connectivity passed={len(reachable)}; published nodes={len(document['proxies'])}")
+        reachable = test_many(candidates, binary, args.workers, warp_proxy)
+        document = write_yaml(reachable, args.output, warp_proxy)
+        print(f"Connectivity passed={len(reachable)}; published nodes={len(document['proxies']) - 1}")
         print("No latency or download-speed tests were performed.")
         return 0
     except Exception as error:
