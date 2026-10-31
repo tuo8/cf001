@@ -47,7 +47,7 @@ jobs:
           VPNGATE_PROBE_WORKERS: "3"
           VPNGATE_DIAGNOSTICS_DIR: ${{ runner.temp }}/vpngate-diagnostics
           VPNGATE_WARP_CONFIG: ${{ secrets.VPNGATE_WARP_CONFIG }}
-          VPNGATE_WARP_PORT: "500"
+          VPNGATE_WARP_PORT: "1701"
         run: |
           set -euo pipefail
           if [[ "${{ inputs.parse_only }}" == "true" ]]; then
