@@ -130,6 +130,28 @@ KEY
             }))
 
 
+    def test_output_deduplicates_proxy_names(self):
+        key = base64.b64encode(bytes(range(32))).decode()
+        cfg = module.load_warp_config(__import__("json").dumps({
+            "private_key": key, "peer_public_key": key, "ipv4": "172.16.0.2"
+        }))
+        warp = module.build_warp_proxy(cfg)
+        items = [
+            {"proxy": {"name": "Duplicate", "type": "openvpn", "server": "198.51.100.1", "port": 1194}},
+            {"proxy": {"name": "Duplicate", "type": "openvpn", "server": "198.51.100.2", "port": 1194}},
+            {"proxy": {"name": "WARP", "type": "openvpn", "server": "198.51.100.3", "port": 1194}},
+        ]
+        with __import__("tempfile").TemporaryDirectory() as tmp:
+            module.write_yaml(items, Path(tmp) / "out.yaml", warp)
+            parsed = __import__("yaml").safe_load((Path(tmp) / "out.yaml").read_text())
+        names = [proxy["name"] for proxy in parsed["proxies"]]
+        self.assertEqual(len(names), len(set(names)))
+        self.assertEqual(names, ["WARP", "Duplicate", "Duplicate (2)", "WARP (2)"])
+        self.assertEqual(
+            parsed["proxy-groups"][0]["proxies"],
+            ["Duplicate", "Duplicate (2)", "WARP (2)"],
+        )
+
     def test_output_contains_warp_and_chains_every_openvpn(self):
         key = base64.b64encode(bytes(range(32))).decode()
         cfg = module.load_warp_config(__import__("json").dumps({

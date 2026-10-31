@@ -453,7 +453,19 @@ def test_many(items, binary, workers, warp_proxy):
 
 
 def write_yaml(results, path, warp_proxy):
-    nodes = [{**item["proxy"], "dialer-proxy": "WARP"} for item in results]
+    nodes = []
+    used_names = set()
+    for item in results:
+        node = {**item["proxy"], "dialer-proxy": "WARP"}
+        base_name = str(node.get("name") or "VPNGate node")
+        unique_name = base_name
+        suffix = 2
+        while unique_name in used_names or unique_name == "WARP":
+            unique_name = f"{base_name} ({suffix})"
+            suffix += 1
+        node["name"] = unique_name
+        used_names.add(unique_name)
+        nodes.append(node)
     if not nodes:
         raise RuntimeError("zero reachable nodes; refusing to publish empty subscription")
     document = {
