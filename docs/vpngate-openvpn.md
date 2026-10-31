@@ -1,5 +1,12 @@
 # VPN Gate OpenVPN 筛选
 
-数据源为 VPN Gate 官方 CSV API。解码 `OpenVPN_Config`，提取 remote/proto/CA 和可选证书、TLS key、cipher、auth、compression。只保留有 remote、port、CA 的 TCP/UDP profile，认证使用官方共享账号 vpn/vpn。
+数据源为 VPN Gate 官方 CSV API。每次 workflow 运行时重新拉取当前列表快照，解码 OpenVPN 配置，提取 remote/proto/CA 和可选证书、TLS key、cipher、auth、compression。只保留包含有效 remote、port、CA 的 TCP/UDP profile，认证使用官方共享账号 vpn/vpn。
 
-官方 Ping/Speed 只用于候选排序。Mihomo 实际启动后通过 mixed-port 做 HTTPS 延迟和下载测试；最终节点必须连续通过两次独立 5 MiB 下载精测。按实测延迟升序、下载速度降序输出。无节点通过时任务失败，不发布空配置、不覆盖旧 KV。
+筛选与更新策略：
+- 以本次官网 CSV 返回的原始列表顺序作为候选顺序，不使用 Ping、Speed 或延迟排序。
+- Mihomo 实际启动每个候选 OpenVPN 节点，通过 mixed-port 发起 HTTPS 请求，确认真实出站连通性。
+- 连通性失败的节点不写入订阅；成功节点按官网列表顺序保留，默认最多 20 个。
+- 不执行 Ping 测试、延迟测量、下载测速或大文件下载。
+- 每小时 UTC 第 17 分钟重新拉取官网快照；支持手动触发。
+
+VPN Gate 官方 CSV 未提供单个节点的最后更新时间字段，所以不能准确给节点标注或按节点更新时间排序。项目按每次获取时的最新官网快照更新；不把 Uptime 字段误当成更新时间。无节点通过时任务失败，不发布空配置、不覆盖旧 KV。

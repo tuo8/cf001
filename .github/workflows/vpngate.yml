@@ -3,11 +3,11 @@ on:
   workflow_dispatch:
     inputs:
       max_candidates:
-        description: 本轮最多测试候选数
+        description: 从官网最新列表中按原始顺序检查的候选数
         required: false
         default: "60"
       top:
-        description: 最终保留节点数
+        description: 最终保留的可连通节点数
         required: false
         default: "20"
       parse_only:
@@ -16,7 +16,7 @@ on:
         required: false
         default: false
   schedule:
-    - cron: "41 3,15 * * *"
+    - cron: "17 * * * *"
 permissions:
   contents: read
 concurrency:
@@ -49,7 +49,7 @@ jobs:
           chmod +x "$RUNNER_TEMP/mihomo"
           "$RUNNER_TEMP/mihomo" -v
           echo "MIHOMO_PATH=$RUNNER_TEMP/mihomo" >> "$GITHUB_ENV"
-      - name: Fetch VPN Gate and test nodes
+      - name: Fetch latest VPN Gate list and check connectivity
         env:
           MIHOMO_PATH: ${{ runner.temp }}/mihomo
           VPNGATE_MAX_CANDIDATES: ${{ inputs.max_candidates || '60' }}
@@ -64,12 +64,12 @@ jobs:
           python scripts/vpngate_optimizer.py --output "$RUNNER_TEMP/vpngate-clash-mi.yaml"
           "$MIHOMO_PATH" -t -f "$RUNNER_TEMP/vpngate-clash-mi.yaml"
           python - "$RUNNER_TEMP/vpngate-clash-mi.yaml" <<'PY'
-          import sys,yaml
-          d=yaml.safe_load(open(sys.argv[1],encoding="utf-8"))
-          assert d.get("proxies") and all(p.get("type")=="openvpn" for p in d["proxies"])
-          names={p["name"] for p in d["proxies"]}
-          assert all(n in names for g in d["proxy-groups"] for n in g.get("proxies",[]))
-          print("Validated OpenVPN nodes:",len(names))
+          import sys, yaml
+          data = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+          assert data.get("proxies") and all(p.get("type") == "openvpn" for p in data["proxies"])
+          names = {p["name"] for p in data["proxies"]}
+          assert all(n in names for group in data["proxy-groups"] for n in group.get("proxies", []))
+          print("Validated OpenVPN nodes:", len(names))
           PY
       - name: Publish to Cloudflare KV
         if: ${{ success() && !inputs.parse_only }}
@@ -90,9 +90,10 @@ jobs:
             --header "Content-Type: application/yaml" \
             --data-binary "@$RUNNER_TEMP/vpngate-clash-mi.yaml" --output "$OUT"
           python - "$OUT" <<'PY'
-          import json,sys
-          d=json.load(open(sys.argv[1],encoding="utf-8"))
-          if not d.get("success"):
-              print("Cloudflare KV error:",json.dumps(d.get("errors",[])));raise SystemExit(1)
+          import json, sys
+          data = json.load(open(sys.argv[1], encoding="utf-8"))
+          if not data.get("success"):
+              print("Cloudflare KV error:", json.dumps(data.get("errors", [])))
+              raise SystemExit(1)
           print("Published VPN Gate subscription to KV.")
           PY
