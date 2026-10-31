@@ -63,15 +63,13 @@ KEY
         self.assertIsNone(module.parse_profile("proto tcp\nremote x 443\n", {}))
         self.assertIsNone(module.parse_profile("proto tcp\n<ca>\nCA\n</ca>", {}))
 
-    def test_site_order_is_preserved(self):
-        items = [
-            {"proxy": {"name": "first"}},
-            {"proxy": {"name": "second"}},
-            {"proxy": {"name": "third"}},
-        ]
+    def test_all_nodes_are_kept_in_site_order_without_truncation(self):
+        items = [{"proxy": {"name": f"node-{index}"}} for index in range(75)]
+        ranked = module.rank(items)
+        self.assertEqual(len(ranked), 75)
         self.assertEqual(
-            [item["proxy"]["name"] for item in module.rank(items, 2)],
-            ["first", "second"],
+            [item["proxy"]["name"] for item in ranked],
+            [item["proxy"]["name"] for item in items],
         )
 
     def test_connectivity_accepts_success_status(self):

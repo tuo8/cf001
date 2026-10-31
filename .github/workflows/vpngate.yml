@@ -2,14 +2,6 @@ name: VPN Gate OpenVPN Optimizer
 on:
   workflow_dispatch:
     inputs:
-      max_candidates:
-        description: 从官网最新列表中按原始顺序检查的候选数
-        required: false
-        default: "60"
-      top:
-        description: 最终保留的可连通节点数
-        required: false
-        default: "20"
       parse_only:
         description: 只解析，不连接和发布
         type: boolean
@@ -49,11 +41,9 @@ jobs:
           chmod +x "$RUNNER_TEMP/mihomo"
           "$RUNNER_TEMP/mihomo" -v
           echo "MIHOMO_PATH=$RUNNER_TEMP/mihomo" >> "$GITHUB_ENV"
-      - name: Fetch latest VPN Gate list and check connectivity
+      - name: Fetch all latest VPN Gate nodes and check connectivity
         env:
           MIHOMO_PATH: ${{ runner.temp }}/mihomo
-          VPNGATE_MAX_CANDIDATES: ${{ inputs.max_candidates || '60' }}
-          VPNGATE_TOP_N: ${{ inputs.top || '20' }}
           VPNGATE_PROBE_WORKERS: "3"
         run: |
           set -euo pipefail

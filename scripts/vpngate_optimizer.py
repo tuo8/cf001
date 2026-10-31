@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fetch the latest VPN Gate directory and publish reachable Mihomo OpenVPN nodes."""
+"""Fetch the latest VPN Gate directory and publish every reachable Mihomo OpenVPN node."""
 import argparse
 import base64
 import concurrent.futures
@@ -155,9 +155,9 @@ def fetch():
     return parse_csv(response.text)
 
 
-def rank(items, limit):
-    """Keep the order of the latest official VPN Gate directory snapshot."""
-    return items[: max(1, limit)]
+def rank(items):
+    """Return every valid node in the latest official VPN Gate directory order."""
+    return list(items)
 
 
 def free_port():
@@ -292,12 +292,6 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", default="vpngate-clash-mi.yaml")
     parser.add_argument(
-        "--max-candidates",
-        type=int,
-        default=int(os.getenv("VPNGATE_MAX_CANDIDATES", "60")),
-    )
-    parser.add_argument("--top", type=int, default=int(os.getenv("VPNGATE_TOP_N", "20")))
-    parser.add_argument(
         "--workers",
         type=int,
         default=int(os.getenv("VPNGATE_PROBE_WORKERS", "3")),
@@ -307,10 +301,10 @@ def main():
 
     try:
         latest_nodes = fetch()
-        candidates = rank(latest_nodes, args.max_candidates)
+        candidates = rank(latest_nodes)
         print(
             f"Latest VPN Gate snapshot: parsed={len(latest_nodes)}; "
-            f"connectivity candidates={len(candidates)}"
+            f"connectivity candidates={len(candidates)} (all valid nodes)"
         )
         if args.parse_only:
             print("Parse-only: no connectivity checks, YAML output, or publishing.")
@@ -321,8 +315,7 @@ def main():
             raise RuntimeError("Mihomo binary not found")
 
         reachable = test_many(candidates, binary, args.workers)
-        selected = reachable[: max(1, args.top)]
-        document = write_yaml(selected, args.output)
+        document = write_yaml(reachable, args.output)
         print(f"Connectivity passed={len(reachable)}; published nodes={len(document['proxies'])}")
         print("No latency or download-speed tests were performed.")
         return 0
