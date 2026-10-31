@@ -97,6 +97,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: vpngate-mihomo-diagnostics-${{ github.run_id }}
-          path: ${{ runner.temp }}/vpngate-diagnostics/
+          path: |
+            ${{ runner.temp }}/vpngate-diagnostics/**/*.log
+            ${{ runner.temp }}/vpngate-diagnostics/**/failure.txt
           if-no-files-found: ignore
           retention-days: 7
