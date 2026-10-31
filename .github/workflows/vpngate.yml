@@ -51,13 +51,13 @@ jobs:
           echo "MIHOMO_PATH=$RUNNER_TEMP/mihomo" >> "$GITHUB_ENV"
       - name: Fetch VPN Gate and test nodes
         env:
-          MIHOMO_PATH: ${ runner.temp }/mihomo
-          VPNGATE_MAX_CANDIDATES: ${ inputs.max_candidates || '60' }
-          VPNGATE_TOP_N: ${ inputs.top || '20' }
+          MIHOMO_PATH: ${{ runner.temp }}/mihomo
+          VPNGATE_MAX_CANDIDATES: ${{ inputs.max_candidates || '60' }}
+          VPNGATE_TOP_N: ${{ inputs.top || '20' }}
           VPNGATE_PROBE_WORKERS: "3"
         run: |
           set -euo pipefail
-          if [[ "${ inputs.parse_only }" == "true" ]]; then
+          if [[ "${{ inputs.parse_only }}" == "true" ]]; then
             python scripts/vpngate_optimizer.py --parse-only
             exit 0
           fi
@@ -72,11 +72,11 @@ jobs:
           print("Validated OpenVPN nodes:",len(names))
           PY
       - name: Publish to Cloudflare KV
-        if: ${ success() && !inputs.parse_only }
+        if: ${{ success() && !inputs.parse_only }}
         env:
-          CF_TOKEN: ${ secrets.CLOUDFLARE_API_TOKEN }
-          CF_ACCOUNT: ${ secrets.CLOUDFLARE_ACCOUNT_ID }
-          CF_NAMESPACE: ${ vars.CLOUDFLARE_KV_NAMESPACE_ID }
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_NAMESPACE: ${{ vars.CLOUDFLARE_KV_NAMESPACE_ID }}
         shell: bash
         run: |
           set -euo pipefail
