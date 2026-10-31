@@ -1,45 +1,22 @@
 /**
- * Private Clash Mi subscription endpoint.
- *
- * Cloudflare setup:
- * - Bind the KV namespace as SUBSCRIPTIONS.
- * - Add Worker secret SUBSCRIPTION_TOKEN with a long random value.
- * - Clash Mi URL: https://<domain>/sub/<same-token>
- * - v2rayN URL: https://<domain>/v2rayn/<same-token>
+ * VPN Gate-only private subscription endpoint.
+ * KV binding: SUBSCRIPTIONS. Worker secret: SUBSCRIPTION_TOKEN.
+ * URL: https://your-domain.example/vpngate/<SUBSCRIPTION_TOKEN>
  */
 export default {
   async fetch(request, env) {
-    const url = new URL(request.url);
-    const parts = url.pathname.split("/").filter(Boolean);
-    const expected = env.SUBSCRIPTION_TOKEN;
-    const keys = { sub: "clash-mi.yaml", v2rayn: "v2rayn.txt" };
-    const key = parts.length === 2 && parts[1] === expected ? keys[parts[0]] : null;
-    if (request.method !== "GET" || !expected || !key) {
+    const p = new URL(request.url).pathname.split("/").filter(Boolean);
+    if (request.method !== "GET" || p.length !== 2 || p[0] !== "vpngate" ||
+        !env.SUBSCRIPTION_TOKEN || p[1] !== env.SUBSCRIPTION_TOKEN) {
       return new Response("Not found", { status: 404, headers: { "Cache-Control": "no-store" } });
     }
-
-    if (!env.SUBSCRIPTIONS) {
-      return new Response("Subscription storage is not configured", {
-        status: 503,
-        headers: { "Cache-Control": "no-store" },
-      });
-    }
-
-    const yaml = await env.SUBSCRIPTIONS.get(key);
-    if (!yaml) {
-      return new Response("Subscription has not been published yet", {
-        status: 503,
-        headers: { "Cache-Control": "no-store" },
-      });
-    }
-
-    return new Response(yaml, {
-      status: 200,
-      headers: {
-        "Content-Type": key === "clash-mi.yaml" ? "text/yaml; charset=utf-8" : "text/plain; charset=utf-8",
-        "Cache-Control": "no-store, max-age=0",
-        "X-Content-Type-Options": "nosniff",
-      },
-    });
-  },
+    if (!env.SUBSCRIPTIONS) return new Response("KV binding missing", { status: 503 });
+    const body = await env.SUBSCRIPTIONS.get("vpngate-clash-mi.yaml");
+    if (!body) return new Response("No tested subscription published yet", { status: 503 });
+    return new Response(body, { status: 200, headers: {
+      "Content-Type": "text/yaml; charset=utf-8",
+      "Cache-Control": "no-store, max-age=0",
+      "X-Content-Type-Options": "nosniff"
+    }});
+  }
 };

@@ -1,15 +1,32 @@
-# Cloudflare 优选 IP 自动测速与更新工具
+# VPN Gate → Clash Mi
 
-原有 CFST 优选 IP 与 hosts 更新功能保持不变。另新增独立的代理订阅优选器：解析常见订阅格式，按真实连通性、延迟和下载速度筛选节点，输出 Clash YAML。
+此仓库现在只负责 VPN Gate 官方 OpenVPN 节点：获取官方 CSV、解析 OpenVPN profile、用 Mihomo 实际连接和测速、生成 Clash Mi YAML，并通过 Cloudflare KV 和自有域名 HTTPS 发布。
 
-## 代理订阅优选器
+## 自动流程
+1. 从 `https://www.vpngate.net/api/iphone/` 获取官方 CSV。
+2. 解码 `OpenVPN_Config`，仅接收包含 remote 与 CA 的 OpenVPN 节点。
+3. 按官方 Ping/Speed 初筛，再由 Mihomo 实际连接。
+4. 初筛通过后还必须连续通过两次独立 5 MiB 下载精测。
+5. 延迟优先、下载速度其次；默认候选 60 个，最终保留 20 个。
+6. 只写入 KV；不会把带账号信息的 YAML 提交到公开仓库或上传 artifact。
 
-1. 打开仓库 **Settings → Secrets and variables → Actions**，新增 repository secret `SUBSCRIPTION_URL`（单个 URL，或每行一个的多个 URL；自动合并并去重）。不要把真实订阅链接或凭据提交到仓库。
-2. 打开 **Actions → Subscription Optimizer → Run workflow**，可选填区域代码（如 `SIN,NRT`）及排名方式；也会每 6 小时自动运行。
-3. **仓库目前是公开的**。为避免泄露代理账号密码，工作流会跳过公开仓库的配置 artifact 上传。需要下载配置时，请先将仓库改为 **Private**，再运行工作流；随后从 run 的 **Artifacts** 下载 `clash-mi-subscription-*`（保留 1 天）。
+## Cloudflare 设置
+- 创建 Workers KV namespace。
+- 部署 `workers/subscription-worker.js`。
+- Worker KV binding 名称设为 `SUBSCRIPTIONS`。
+- Worker secret `SUBSCRIPTION_TOKEN` 设置为长随机字符串。
+- 将自己的域名绑定到 Worker，启用 HTTPS。
 
-详细说明见 [`docs/subscription-optimizer.md`](docs/subscription-optimizer.md)。配置含代理认证参数，不要公开分享。
+## GitHub 设置
+Settings → Secrets and variables → Actions:
+- Secret `CLOUDFLARE_API_TOKEN`：授予目标账户 KV 写入权限。
+- Secret `CLOUDFLARE_ACCOUNT_ID`：Account ID。
+- Variable `CLOUDFLARE_KV_NAMESPACE_ID`：KV namespace ID。
 
-**兼容性提示：** 解析支持 Clash YAML、Base64 订阅及常见 SS/VMess/VLESS/Trojan/SOCKS/HTTP/Hysteria2 URI 的常见字段。协议扩展和供应商私有格式可能需要适配。地区筛选基于节点名称标签。真实测速需要 Mihomo 核心。
+## 运行
+Actions → VPN Gate OpenVPN Optimizer → Run workflow。parse-only 只解析不测速。每天 UTC 03:41 和 15:41 自动更新。
 
----
+Clash Mi 远程订阅地址：`https://你的域名/vpngate/你的SUBSCRIPTION_TOKEN`。
+
+## 限制
+Mihomo OpenVPN outbound 从 v1.19.25 起提供；工作流固定 v1.19.33 并验证 SHA-256。iPhone Clash Mi 内核也必须支持 OpenVPN outbound。VPN Gate 为志愿者公共节点，可能下线或记录流量，不要用于敏感账号或重要业务。Worker 仅发布 HTTPS 配置，不转发 VPN 隧道。无节点通过严格测试时不会覆盖上一次 KV 订阅。

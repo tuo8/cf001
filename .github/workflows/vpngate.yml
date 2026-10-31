@@ -1,0 +1,98 @@
+name: VPN Gate OpenVPN Optimizer
+on:
+  workflow_dispatch:
+    inputs:
+      max_candidates:
+        description: 本轮最多测试候选数
+        required: false
+        default: "60"
+      top:
+        description: 最终保留节点数
+        required: false
+        default: "20"
+      parse_only:
+        description: 只解析，不连接和发布
+        type: boolean
+        required: false
+        default: false
+  schedule:
+    - cron: "41 3,15 * * *"
+permissions:
+  contents: read
+concurrency:
+  group: vpngate-openvpn-optimizer
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements-subscription.txt
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+      - name: Install Mihomo v1.19.33 and verify SHA-256
+        shell: bash
+        run: |
+          set -euo pipefail
+          V="v1.19.33"
+          A="$RUNNER_TEMP/mihomo.gz"
+          U="https://github.com/MetaCubeX/mihomo/releases/download/$V/mihomo-linux-amd64-compatible-$V.gz"
+          S="386508bfb1c72c43b6a0eda73708ecdce82546581b0ebcb16366c53757c622b6"
+          curl --fail --location --retry 3 --retry-all-errors --silent --show-error "$U" --output "$A"
+          echo "$S  $A" | sha256sum --check --status
+          gunzip -c "$A" > "$RUNNER_TEMP/mihomo"
+          chmod +x "$RUNNER_TEMP/mihomo"
+          "$RUNNER_TEMP/mihomo" -v
+          echo "MIHOMO_PATH=$RUNNER_TEMP/mihomo" >> "$GITHUB_ENV"
+      - name: Fetch VPN Gate and test nodes
+        env:
+          MIHOMO_PATH: \${{ runner.temp }}/mihomo
+          VPNGATE_MAX_CANDIDATES: \${{ inputs.max_candidates || '60' }}
+          VPNGATE_TOP_N: \${{ inputs.top || '20' }}
+          VPNGATE_PROBE_WORKERS: "3"
+        run: |
+          set -euo pipefail
+          if [[ "\${{ inputs.parse_only }}" == "true" ]]; then
+            python scripts/vpngate_optimizer.py --parse-only
+            exit 0
+          fi
+          python scripts/vpngate_optimizer.py --output "$RUNNER_TEMP/vpngate-clash-mi.yaml"
+          "$MIHOMO_PATH" -t -f "$RUNNER_TEMP/vpngate-clash-mi.yaml"
+          python - "$RUNNER_TEMP/vpngate-clash-mi.yaml" <<'PY'
+          import sys,yaml
+          d=yaml.safe_load(open(sys.argv[1],encoding="utf-8"))
+          assert d.get("proxies") and all(p.get("type")=="openvpn" for p in d["proxies"])
+          names={p["name"] for p in d["proxies"]}
+          assert all(n in names for g in d["proxy-groups"] for n in g.get("proxies",[]))
+          print("Validated OpenVPN nodes:",len(names))
+          PY
+      - name: Publish to Cloudflare KV
+        if: \${{ success() && inputs.parse_only != true }}
+        env:
+          CF_TOKEN: \${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: \${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_NAMESPACE: \${{ vars.CLOUDFLARE_KV_NAMESPACE_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CF_TOKEN" || { echo "::error::Missing CLOUDFLARE_API_TOKEN"; exit 2; }
+          test -n "$CF_ACCOUNT" || { echo "::error::Missing CLOUDFLARE_ACCOUNT_ID"; exit 2; }
+          test -n "$CF_NAMESPACE" || { echo "::error::Missing CLOUDFLARE_KV_NAMESPACE_ID"; exit 2; }
+          OUT="$RUNNER_TEMP/cf-kv.json"
+          curl --fail --silent --show-error --request PUT \
+            "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/storage/kv/namespaces/$CF_NAMESPACE/values/vpngate-clash-mi.yaml" \
+            --header "Authorization: Bearer $CF_TOKEN" \
+            --header "Content-Type: application/yaml" \
+            --data-binary "@$RUNNER_TEMP/vpngate-clash-mi.yaml" --output "$OUT"
+          python - "$OUT" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1],encoding="utf-8"))
+          if not d.get("success"):
+              print("Cloudflare KV error:",json.dumps(d.get("errors",[])));raise SystemExit(1)
+          print("Published VPN Gate subscription to KV.")
+          PY
