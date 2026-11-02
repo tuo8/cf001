@@ -88,8 +88,9 @@ jobs:
           groups = {g["name"]: g for g in data.get("proxy-groups", [])}
           valid_names = names | set(groups)
           assert all(n in valid_names for group in groups.values() for n in group.get("proxies", []))
-          assert groups["出站模式"]["proxies"] == ["WARP 直连测试", "VPN Gate 优选"]
-          assert data.get("rules", [None])[0] == "MATCH,出站模式"
+          assert list(groups) == ["出站节点"]
+          assert groups["出站节点"]["proxies"] == ["WARP"] + [p["name"] for p in openvpn]
+          assert data.get("rules", [None])[0] == "MATCH,出站节点"
           print("Validated WARP + OpenVPN nodes:", len(openvpn))
           PY
       - name: Publish to Cloudflare KV
