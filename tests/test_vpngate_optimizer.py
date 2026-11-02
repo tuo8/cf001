@@ -184,6 +184,48 @@ KEY
         self.assertEqual(parsed["proxies"][1]["dialer-proxy"], "WARP")
         self.assertEqual(doc["proxy-groups"][0]["proxies"], ["VPN Japan"])
 
+    def test_warp_port_candidates_tries_configured_then_fallbacks(self):
+        self.assertEqual(
+            module.warp_port_candidates({"port": 1701}),
+            [1701, 2408, 500, 4500],
+        )
+        self.assertEqual(
+            module.warp_port_candidates({"port": 2408}),
+            [2408, 500, 1701, 4500],
+        )
+
+    def test_warp_connectivity_accepts_https_success(self):
+        response = Mock(status_code=204)
+        with patch.object(module.requests, "get", return_value=response):
+            self.assertTrue(module.check_warp_connectivity("http://127.0.0.1:7890"))
+        response.close.assert_called_once()
+
+    def test_probe_warp_uses_next_port_after_data_plane_failure(self):
+        key = base64.b64encode(bytes(range(32))).decode()
+        config = module.load_warp_config(__import__("json").dumps({
+            "private_key": key, "peer_public_key": key, "ipv4": "172.16.0.2", "port": 2408
+        }))
+        process, log = Mock(), Mock()
+        with __import__("tempfile").TemporaryDirectory() as tmp:
+            with patch.object(module, "start_warp", return_value=(process, log, 7890)) as start, \
+                 patch.object(module, "check_warp_connectivity", side_effect=[False, True]), \
+                 patch.object(module, "stop_node") as stop:
+                proxy = module.probe_warp("mihomo", config, Path(tmp))
+        self.assertEqual(proxy["peers"][0]["port"], 500)
+        self.assertEqual(start.call_count, 2)
+        self.assertEqual(stop.call_count, 2)
+
+    def test_probe_warp_fails_closed_when_all_ports_fail(self):
+        key = base64.b64encode(bytes(range(32))).decode()
+        config = module.load_warp_config(__import__("json").dumps({
+            "private_key": key, "peer_public_key": key, "ipv4": "172.16.0.2", "port": 2408
+        }))
+        with __import__("tempfile").TemporaryDirectory() as tmp:
+            with patch.object(module, "start_warp", side_effect=RuntimeError("no tunnel")) as start:
+                with self.assertRaisesRegex(RuntimeError, "refusing to test VPN Gate"):
+                    module.probe_warp("mihomo", config, Path(tmp))
+        self.assertEqual(start.call_count, 4)
+
     def test_connectivity_accepts_success_status(self):
         response = Mock(status_code=204)
         with patch.object(module.requests, "get", return_value=response):

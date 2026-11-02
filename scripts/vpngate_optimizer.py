@@ -84,6 +84,113 @@ def build_warp_proxy(config):
             "ip": config["ipv4"], "udp": True, "mtu": config["mtu"], "peers": [peer]}
 
 
+WARP_PORT_CANDIDATES = (2408, 500, 1701, 4500)
+
+
+def warp_port_candidates(config):
+    """Try the configured WARP port first, then xehn's primary port set."""
+    return list(dict.fromkeys([config["port"], *WARP_PORT_CANDIDATES]))
+
+
+def start_warp(warp_proxy, binary, folder):
+    """Start a WARP-only Mihomo instance with no other outbound or fallback."""
+    folder.mkdir(parents=True, exist_ok=True)
+    port = free_port()
+    config = {
+        "mixed-port": port,
+        "mode": "rule",
+        "log-level": "debug",
+        "proxies": [warp_proxy],
+        "proxy-groups": [{"name": "WARP-ONLY", "type": "select", "proxies": ["WARP"]}],
+        "rules": ["MATCH,WARP-ONLY"],
+    }
+    config_path = folder / "warp-only.yaml"
+    config_path.write_text(yaml.safe_dump(config, allow_unicode=True), encoding="utf-8")
+    log_path = folder / "mihomo.log"
+    log = log_path.open("w", encoding="utf-8")
+    process = None
+    try:
+        process = subprocess.Popen([binary, "-f", str(config_path)], stdout=log, stderr=subprocess.STDOUT)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                raise RuntimeError(f"Mihomo WARP-only startup failed: {_log_tail(log_path)}")
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                    return process, log, port
+            except OSError:
+                time.sleep(0.1)
+        raise RuntimeError(f"Mihomo WARP-only startup timeout: {_log_tail(log_path)}")
+    except Exception:
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=2)
+        log.flush()
+        log.close()
+        raise
+
+
+def check_warp_connectivity(proxy_url):
+    """Require successful HTTPS requests through the WARP-only local proxy."""
+    for url in CONNECTIVITY_URLS:
+        response = None
+        try:
+            response = requests.get(
+                url, proxies={"http": proxy_url, "https": proxy_url},
+                timeout=(4, 6), allow_redirects=False, stream=True,
+            )
+            if response.status_code in (200, 204):
+                return True
+        except requests.RequestException:
+            pass
+        finally:
+            if response is not None:
+                response.close()
+    return False
+
+
+def probe_warp(binary, warp_config, diagnostic_root):
+    """Gate all VPN Gate checks on a WARP-only HTTPS data-plane success.
+
+    Mihomo does not expose WireGuard's raw last_handshake_time_sec field; this
+    deliberately verifies real traffic through a config containing WARP only,
+    rather than treating process startup or a listening local port as a handshake.
+    """
+    failures = []
+    for udp_port in warp_port_candidates(warp_config):
+        proxy = build_warp_proxy({**warp_config, "port": udp_port})
+        folder = diagnostic_root / "warp-only" / str(udp_port)
+        process = log = None
+        failure = None
+        try:
+            process, log, local_port = start_warp(proxy, binary, folder)
+            if check_warp_connectivity(f"http://127.0.0.1:{local_port}"):
+                stop_node(process, log)
+                process = log = None
+                shutil.rmtree(folder, ignore_errors=True)
+                print(f"WARP-only HTTPS data-plane PASS: UDP port {udp_port}")
+                return proxy
+            failure = "HTTPS data-plane probes failed through WARP-only proxy"
+        except Exception as error:
+            failure = f"{type(error).__name__}: {error}"
+        finally:
+            if process is not None:
+                stop_node(process, log)
+        failures.append(f"{udp_port}: {failure}")
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "failure.txt").write_text(
+            f"WARP UDP port: {udp_port}\nreason: {failure}\n", encoding="utf-8"
+        )
+        print(f"WARP-only HTTPS data-plane FAIL: UDP port {udp_port}: {failure}")
+    raise RuntimeError(
+        "WARP-only validation failed on all candidate UDP ports; refusing to test VPN Gate "
+        "or publish a new subscription. " + " | ".join(failures)
+    )
+
 def decode_config(value):
     value = (value or "").strip()
     if not value:
@@ -512,14 +619,27 @@ def main():
             return 0
 
         warp_config = load_warp_config()
-        warp_proxy = build_warp_proxy(warp_config)
-        print("WARP WireGuard configuration validated; testing VPN Gate nodes through WARP.")
 
         binary = shutil.which(os.getenv("MIHOMO_PATH", "mihomo"))
         if not binary:
             raise RuntimeError("Mihomo binary not found")
 
-        reachable = test_many(candidates, binary, args.workers, warp_proxy)
+        configured_root = os.getenv("VPNGATE_DIAGNOSTICS_DIR")
+        if configured_root:
+            diagnostic_root = Path(configured_root)
+            diagnostic_root.mkdir(parents=True, exist_ok=True)
+            warp_proxy = probe_warp(binary, warp_config, diagnostic_root)
+            reachable = test_many(candidates, binary, args.workers, warp_proxy)
+        else:
+            with tempfile.TemporaryDirectory(prefix="cf001-diagnostics-") as temporary:
+                diagnostic_root = Path(temporary)
+                warp_proxy = probe_warp(binary, warp_config, diagnostic_root)
+                reachable = test_many(candidates, binary, args.workers, warp_proxy)
+
+        print(
+            f"WARP-only validation passed on UDP port {warp_proxy['peers'][0]['port']}; "
+            "testing VPN Gate nodes through WARP."
+        )
         ranked = rank(reachable)
         document = write_yaml(ranked, args.output, warp_proxy)
         print(f"Connectivity passed={len(reachable)}; ranked and published nodes={len(document['proxies']) - 1}")
