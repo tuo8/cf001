@@ -583,6 +583,7 @@ def write_yaml(results, path, warp_proxy):
     document = {
         "proxies": [warp_proxy] + nodes,
         "proxy-groups": [
+            {"name": "WARP 直连测试", "type": "select", "proxies": ["WARP"]},
             {"name": "VPN Gate 优选", "type": "select", "proxies": [node["name"] for node in nodes]}
         ],
         "rules": ["MATCH,VPN Gate 优选"],

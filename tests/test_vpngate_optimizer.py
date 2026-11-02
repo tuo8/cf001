@@ -167,6 +167,10 @@ KEY
         self.assertEqual(names, ["WARP", "Duplicate", "Duplicate (2)", "WARP (2)"])
         self.assertEqual(
             parsed["proxy-groups"][0]["proxies"],
+            ["WARP"],
+        )
+        self.assertEqual(
+            parsed["proxy-groups"][1]["proxies"],
             ["Duplicate", "Duplicate (2)", "WARP (2)"],
         )
 
@@ -182,7 +186,8 @@ KEY
             parsed = __import__("yaml").safe_load((Path(tmp) / "out.yaml").read_text())
         self.assertEqual(parsed["proxies"][0]["type"], "wireguard")
         self.assertEqual(parsed["proxies"][1]["dialer-proxy"], "WARP")
-        self.assertEqual(doc["proxy-groups"][0]["proxies"], ["VPN Japan"])
+        self.assertEqual(doc["proxy-groups"][0]["proxies"], ["WARP"])
+        self.assertEqual(doc["proxy-groups"][1]["proxies"], ["VPN Japan"])
 
     def test_warp_port_candidates_tries_configured_then_fallbacks(self):
         self.assertEqual(
