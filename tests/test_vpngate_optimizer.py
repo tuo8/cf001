@@ -12,6 +12,16 @@ spec.loader.exec_module(module)
 
 
 class Tests(unittest.TestCase):
+    def setUp(self):
+        self._verified_ports_patch = patch.dict(
+            module.os.environ,
+            {"VPNGATE_WARP_VERIFIED_PORTS": "2408,500,1701,4500"},
+        )
+        self._verified_ports_patch.start()
+
+    def tearDown(self):
+        self._verified_ports_patch.stop()
+
     def test_tcp(self):
         config = """proto tcp-client
 remote 203.0.113.1 443
@@ -189,15 +199,21 @@ KEY
         self.assertEqual(doc["proxy-groups"][0]["proxies"], ["WARP"])
         self.assertEqual(doc["proxy-groups"][1]["proxies"], ["VPN Japan"])
 
-    def test_warp_port_candidates_tries_configured_then_fallbacks(self):
-        self.assertEqual(
-            module.warp_port_candidates({"port": 1701}),
-            [1701, 2408, 500, 4500],
-        )
-        self.assertEqual(
-            module.warp_port_candidates({"port": 2408}),
-            [2408, 500, 1701, 4500],
-        )
+    def test_warp_port_candidates_accepts_only_go_verified_ports(self):
+        with patch.dict(module.os.environ, {"VPNGATE_WARP_VERIFIED_PORTS": "1701,2408,500,4500"}):
+            self.assertEqual(module.warp_port_candidates({"port": 2408}), [1701, 2408, 500, 4500])
+        with patch.dict(module.os.environ, {"VPNGATE_WARP_VERIFIED_PORTS": "2408,500,2408"}):
+            self.assertEqual(module.warp_port_candidates({"port": 2408}), [2408, 500])
+
+    def test_warp_port_candidates_fails_closed_without_go_output(self):
+        with patch.dict(module.os.environ, {"VPNGATE_WARP_VERIFIED_PORTS": ""}):
+            with self.assertRaisesRegex(RuntimeError, "Go WARP probe"):
+                module.warp_port_candidates({"port": 2408})
+
+    def test_warp_port_candidates_rejects_invalid_ports(self):
+        with patch.dict(module.os.environ, {"VPNGATE_WARP_VERIFIED_PORTS": "2408,65536"}):
+            with self.assertRaisesRegex(ValueError, "out-of-range"):
+                module.warp_port_candidates({"port": 2408})
 
     def test_warp_connectivity_accepts_https_success(self):
         response = Mock(status_code=204)

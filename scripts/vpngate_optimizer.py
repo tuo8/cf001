@@ -84,12 +84,18 @@ def build_warp_proxy(config):
             "ip": config["ipv4"], "udp": True, "mtu": config["mtu"], "peers": [peer]}
 
 
-WARP_PORT_CANDIDATES = (2408, 500, 1701, 4500)
-
-
 def warp_port_candidates(config):
-    """Try the configured WARP port first, then xehn's primary port set."""
-    return list(dict.fromkeys([config["port"], *WARP_PORT_CANDIDATES]))
+    """Return only ports that passed the independent WireGuard handshake and HTTPS probe."""
+    raw = os.getenv("VPNGATE_WARP_VERIFIED_PORTS", "").strip()
+    if not raw:
+        raise RuntimeError("Missing Go WARP probe verified_ports; refusing Mihomo tests or publication")
+    try:
+        ports = [int(value.strip()) for value in raw.split(",") if value.strip()]
+    except ValueError as error:
+        raise ValueError("Go WARP probe returned an invalid verified port list") from error
+    if not ports or any(not 1 <= port <= 65535 for port in ports):
+        raise ValueError("Go WARP probe returned an empty or out-of-range verified port list")
+    return list(dict.fromkeys(ports))
 
 
 def start_warp(warp_proxy, binary, folder):
@@ -154,11 +160,11 @@ def check_warp_connectivity(proxy_url):
 
 
 def probe_warp(binary, warp_config, diagnostic_root):
-    """Gate all VPN Gate checks on a WARP-only HTTPS data-plane success.
+    """Run Mihomo's WARP-only data-plane check on Go-verified ports only.
 
-    Mihomo does not expose WireGuard's raw last_handshake_time_sec field; this
-    deliberately verifies real traffic through a config containing WARP only,
-    rather than treating process startup or a listening local port as a handshake.
+    The preceding Go probe confirms a nonzero WireGuard last_handshake_time_sec
+    and in-tunnel HTTPS. This second layer confirms Mihomo itself can carry HTTPS
+    through the same WARP profile before VPN Gate nodes are tested.
     """
     failures = []
     for udp_port in warp_port_candidates(warp_config):
@@ -638,7 +644,7 @@ def main():
                 reachable = test_many(candidates, binary, args.workers, warp_proxy)
 
         print(
-            f"WARP-only validation passed on UDP port {warp_proxy['peers'][0]['port']}; "
+            f"Go WireGuard handshake + HTTPS and Mihomo WARP-only validation passed on UDP port {warp_proxy['peers'][0]['port']}; "
             "testing VPN Gate nodes through WARP."
         )
         ranked = rank(reachable)

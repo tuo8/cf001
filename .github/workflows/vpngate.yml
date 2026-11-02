@@ -27,6 +27,27 @@ jobs:
         run: pip install -r requirements-subscription.txt
       - name: Unit tests
         run: python -m unittest discover -s tests -v
+      - name: Set up Go for WARP probe
+        if: ${{ !inputs.parse_only }}
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/warp-probe/go.mod
+          cache: false
+      - name: Resolve WARP probe dependencies
+        if: ${{ !inputs.parse_only }}
+        working-directory: tools/warp-probe
+        run: go mod tidy
+      - name: Test WARP handshake probe
+        if: ${{ !inputs.parse_only }}
+        working-directory: tools/warp-probe
+        run: go test -v ./...
+      - name: Confirm real WARP handshake and HTTPS
+        if: ${{ !inputs.parse_only }}
+        id: warp_probe
+        working-directory: tools/warp-probe
+        env:
+          VPNGATE_WARP_CONFIG: ${{ secrets.VPNGATE_WARP_CONFIG }}
+        run: go run ./cmd/warp-probe
       - name: Install Mihomo v1.19.33 and verify SHA-256
         shell: bash
         run: |
@@ -47,6 +68,7 @@ jobs:
           VPNGATE_PROBE_WORKERS: "3"
           VPNGATE_DIAGNOSTICS_DIR: ${{ runner.temp }}/vpngate-diagnostics
           VPNGATE_WARP_CONFIG: ${{ secrets.VPNGATE_WARP_CONFIG }}
+          VPNGATE_WARP_VERIFIED_PORTS: ${{ steps.warp_probe.outputs.verified_ports }}
         run: |
           set -euo pipefail
           if [[ "${{ inputs.parse_only }}" == "true" ]]; then
