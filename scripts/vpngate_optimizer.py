@@ -590,9 +590,12 @@ def write_yaml(results, path, warp_proxy):
         "proxies": [warp_proxy] + nodes,
         "proxy-groups": [
             {"name": "WARP 直连测试", "type": "select", "proxies": ["WARP"]},
-            {"name": "VPN Gate 优选", "type": "select", "proxies": [node["name"] for node in nodes]}
+            {"name": "VPN Gate 优选", "type": "select", "proxies": [node["name"] for node in nodes]},
+            {"name": "出站模式", "type": "select", "proxies": ["WARP 直连测试", "VPN Gate 优选"]},
         ],
-        "rules": ["MATCH,VPN Gate 优选"],
+        # Route all unmatched traffic through the user-selected mode. WARP is
+        # the safe default; VPN Gate nodes still chain through WARP themselves.
+        "rules": ["MATCH,出站模式"],
     }
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)

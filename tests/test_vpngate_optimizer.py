@@ -183,6 +183,11 @@ KEY
             parsed["proxy-groups"][1]["proxies"],
             ["Duplicate", "Duplicate (2)", "WARP (2)"],
         )
+        self.assertEqual(
+            parsed["proxy-groups"][2],
+            {"name": "出站模式", "type": "select", "proxies": ["WARP 直连测试", "VPN Gate 优选"]},
+        )
+        self.assertEqual(parsed["rules"], ["MATCH,出站模式"])
 
     def test_output_contains_warp_and_chains_every_openvpn(self):
         key = base64.b64encode(bytes(range(32))).decode()
@@ -198,6 +203,8 @@ KEY
         self.assertEqual(parsed["proxies"][1]["dialer-proxy"], "WARP")
         self.assertEqual(doc["proxy-groups"][0]["proxies"], ["WARP"])
         self.assertEqual(doc["proxy-groups"][1]["proxies"], ["VPN Japan"])
+        self.assertEqual(doc["proxy-groups"][2]["proxies"], ["WARP 直连测试", "VPN Gate 优选"])
+        self.assertEqual(doc["rules"], ["MATCH,出站模式"])
 
     def test_warp_port_candidates_accepts_only_go_verified_ports(self):
         with patch.dict(module.os.environ, {"VPNGATE_WARP_VERIFIED_PORTS": "1701,2408,500,4500"}):
