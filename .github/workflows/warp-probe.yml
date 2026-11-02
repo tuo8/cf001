@@ -36,5 +36,5 @@ jobs:
       - name: Verify real WARP handshake and HTTPS
         working-directory: tools/warp-probe
         env:
-          VPNGATE_WARP_CONFIG: \${{ secrets.VPNGATE_WARP_CONFIG }}
+          VPNGATE_WARP_CONFIG: ${{ secrets.VPNGATE_WARP_CONFIG }}
         run: go run ./cmd/warp-probe
