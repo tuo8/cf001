@@ -85,7 +85,11 @@ jobs:
           openvpn = proxies[1:]
           assert openvpn and all(p.get("type") == "openvpn" and p.get("dialer-proxy") == "WARP" for p in openvpn)
           names = {p["name"] for p in proxies}
-          assert all(n in names for group in data["proxy-groups"] for n in group.get("proxies", []))
+          groups = {g["name"]: g for g in data.get("proxy-groups", [])}
+          valid_names = names | set(groups)
+          assert all(n in valid_names for group in groups.values() for n in group.get("proxies", []))
+          assert groups["出站模式"]["proxies"] == ["WARP 直连测试", "VPN Gate 优选"]
+          assert data.get("rules", [None])[0] == "MATCH,出站模式"
           print("Validated WARP + OpenVPN nodes:", len(openvpn))
           PY
       - name: Publish to Cloudflare KV
