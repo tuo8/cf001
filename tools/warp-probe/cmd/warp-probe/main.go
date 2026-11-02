@@ -343,7 +343,7 @@ func probePort(config warpConfig, port int) (probeResult, error) {
 	}
 
 	bind := newReservedBind(config.reserved)
-	wg := device.NewDevice(tunDevice, bind, device.NewLogger(device.LogLevelSilent, "warp-probe"), 0)
+	wg := device.NewDevice(newTUNBridge(tunDevice), bind, device.NewLogger(device.LogLevelSilent, "warp-probe"), 0)
 	defer wg.Close()
 
 	uapi := fmt.Sprintf(
