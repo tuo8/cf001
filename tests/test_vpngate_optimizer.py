@@ -95,28 +95,21 @@ KEY
         self.assertIsNone(module.parse_profile("proto tcp\nremote x 443\n", {}))
         self.assertIsNone(module.parse_profile("proto tcp\n<ca>\nCA\n</ca>", {}))
 
-    def test_unmeasured_nodes_keep_input_order(self):
-        items = [{"proxy": {"name": f"node-{index}"}} for index in range(75)]
-        ranked = module.rank(items)
-        self.assertEqual(len(ranked), 75)
-        self.assertEqual(
-            [item["proxy"]["name"] for item in ranked],
-            [item["proxy"]["name"] for item in items],
-        )
-
-    def test_rank_combines_latency_and_download_speed(self):
+    def test_reachable_nodes_preserve_official_list_order_without_speed_ranking(self):
         items = [
-            {"proxy": {"name": "slow"}, "latency_ms": 100, "download_mbps": 20},
-            {"proxy": {"name": "balanced"}, "latency_ms": 50, "download_mbps": 50},
-            {"proxy": {"name": "fast"}, "latency_ms": 25, "download_mbps": 100},
-            {"proxy": {"name": "unmeasured"}},
+            {"proxy": {"name": "node-0"}, "ok": True},
+            {"proxy": {"name": "node-1"}, "ok": False},
+            {"proxy": {"name": "node-2"}, "ok": True},
+            {"proxy": {"name": "node-3"}, "ok": True},
         ]
-        ranked = module.rank(items)
+        with patch.object(module, "probe", side_effect=lambda item, *args: item["ok"]):
+            reachable = module._run_probes(items, "mihomo", 3, Path("/tmp/cf001-test"), {})
         self.assertEqual(
-            [item["proxy"]["name"] for item in ranked],
-            ["fast", "balanced", "slow", "unmeasured"],
+            [item["proxy"]["name"] for item in reachable],
+            ["node-0", "node-2", "node-3"],
         )
-
+        self.assertFalse(hasattr(module, "rank"))
+        self.assertFalse(hasattr(module, "measure_performance"))
 
     def test_warp_config_and_proxy(self):
         key = base64.b64encode(bytes(range(32))).decode()
