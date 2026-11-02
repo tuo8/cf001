@@ -23,8 +23,6 @@ CONNECTIVITY_URLS = (
     "https://cp.cloudflare.com/generate_204",
     "https://www.gstatic.com/generate_204",
 )
-DOWNLOAD_TEST_URL = "https://speed.cloudflare.com/__down?bytes=1000000"
-DOWNLOAD_TEST_BYTES = 1_000_000
 # Reserved bytes decoded from the current wgcf registration client_id.
 # Refresh this value if the WARP registration is replaced.
 DEFAULT_WARP_RESERVED = [211, 165, 3]
@@ -338,34 +336,6 @@ def fetch():
     return parse_csv(response.text)
 
 
-def rank(items):
-    """Rank reachable nodes with equal weight for relative latency and download speed."""
-    indexed = list(enumerate(items))
-    measured = [
-        item for item in items
-        if isinstance(item.get("latency_ms"), (int, float)) and item["latency_ms"] > 0
-        and isinstance(item.get("download_mbps"), (int, float)) and item["download_mbps"] > 0
-    ]
-    if not measured:
-        return list(items)
-
-    min_latency = min(item["latency_ms"] for item in measured)
-    max_speed = max(item["download_mbps"] for item in measured)
-
-    def score(pair):
-        index, item = pair
-        latency = item.get("latency_ms")
-        speed = item.get("download_mbps")
-        if not isinstance(latency, (int, float)) or latency <= 0:
-            return (1, float("inf"), index)
-        if not isinstance(speed, (int, float)) or speed <= 0:
-            return (1, float("inf"), index)
-        combined = 0.5 * (latency / min_latency) + 0.5 * (max_speed / speed)
-        return (0, combined, index)
-
-    return [item for _, item in sorted(indexed, key=score)]
-
-
 def free_port():
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
@@ -457,54 +427,6 @@ def check_connectivity(proxy_url):
     return False
 
 
-def measure_performance(proxy_url):
-    """Measure HTTPS response latency and a 1 MB download through the selected proxy."""
-    proxies = {"http": proxy_url, "https": proxy_url}
-    latencies = []
-    for url in CONNECTIVITY_URLS:
-        response = None
-        started = time.perf_counter()
-        try:
-            response = requests.get(
-                url, proxies=proxies, timeout=(5, 8),
-                allow_redirects=False, stream=True,
-            )
-            if response.status_code in (200, 204):
-                latencies.append((time.perf_counter() - started) * 1000)
-        except requests.RequestException:
-            pass
-        finally:
-            if response is not None:
-                response.close()
-
-    latency_ms = min(latencies) if latencies else None
-    download_mbps = None
-    response = None
-    started = time.perf_counter()
-    try:
-        response = requests.get(
-            DOWNLOAD_TEST_URL, proxies=proxies, timeout=(5, 20),
-            allow_redirects=False, stream=True,
-        )
-        if response.status_code == 200:
-            received = 0
-            for chunk in response.iter_content(chunk_size=65536):
-                if chunk:
-                    received += len(chunk)
-                    if received >= DOWNLOAD_TEST_BYTES:
-                        break
-            elapsed = time.perf_counter() - started
-            if received >= DOWNLOAD_TEST_BYTES and elapsed > 0:
-                download_mbps = (DOWNLOAD_TEST_BYTES * 8) / elapsed / 1_000_000
-    except requests.RequestException:
-        pass
-    finally:
-        if response is not None:
-            response.close()
-
-    return {"latency_ms": latency_ms, "download_mbps": download_mbps}
-
-
 def probe(item, binary, folder, warp_proxy):
     process = log = None
     error_message = None
@@ -514,12 +436,7 @@ def probe(item, binary, folder, warp_proxy):
         if not check_connectivity(proxy_url):
             error_message = "HTTP connectivity probes failed for both configured endpoints"
             return False
-        item.update(measure_performance(proxy_url))
-        print(
-            f"性能测试 {item['country']} | {item['proxy']['name']}: "
-            f"latency={item.get('latency_ms')} ms, "
-            f"download={item.get('download_mbps')} Mbps"
-        )
+        print(f"连通性通过: {item['country']} | {item['proxy']['name']}")
         return True
     except Exception as error:
         error_message = f"{type(error).__name__}: {error}"
@@ -650,14 +567,9 @@ def main():
             f"Go WireGuard handshake + HTTPS and Mihomo WARP-only validation passed on UDP port {warp_proxy['peers'][0]['port']}; "
             "testing VPN Gate nodes through WARP."
         )
-        ranked = rank(reachable)
-        document = write_yaml(ranked, args.output, warp_proxy)
-        print(f"Connectivity passed={len(reachable)}; ranked and published nodes={len(document['proxies']) - 1}")
-        if ranked and ranked[0].get("latency_ms") and ranked[0].get("download_mbps"):
-            print(
-                f"Top node: {ranked[0]['proxy']['name']} | "
-                f"{ranked[0]['latency_ms']:.1f} ms | {ranked[0]['download_mbps']:.2f} Mbps"
-            )
+        # _run_probes preserves the original VPN Gate API order.
+        document = write_yaml(reachable, args.output, warp_proxy)
+        print(f"Connectivity passed={len(reachable)}; published nodes={len(document['proxies']) - 1}")
         return 0
     except Exception as error:
         print(f"VPN Gate task failed: {type(error).__name__}: {str(error)[:160]}")
