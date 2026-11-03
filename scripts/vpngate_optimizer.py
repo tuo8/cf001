@@ -387,6 +387,9 @@ def start_node(node, binary, folder, warp_proxy):
     chained_node = {
         **node,
         "dialer-proxy": "WARP",
+        # OpenVPN dev tun is a Layer-3 IP tunnel; inner UDP (DNS/53, etc.) must be enabled
+        # even when the outer OpenVPN transport protocol (proto) is TCP.
+        "udp": True,
         "mtu": min(int(node.get("mtu", 1200)), int(warp_proxy.get("mtu", 1280)) - 80),
         "remote-dns-resolve": True,
         "dns": node.get("dns") or ["1.1.1.1", "8.8.8.8"],
@@ -400,7 +403,11 @@ def start_node(node, binary, folder, warp_proxy):
             "enable": True,
             "ipv6": False,
             "default-nameserver": ["1.1.1.1", "8.8.8.8"],
-            "nameserver": ["https://cloudflare-dns.com/dns-query", "https://dns.google/dns-query"],
+            "nameserver": [
+                "https://1.1.1.1/dns-query#WARP",
+                "https://8.8.8.8/dns-query#WARP",
+            ],
+            "proxy-server-nameserver": ["1.1.1.1", "8.8.8.8"],
         },
         "proxies": [warp_proxy, chained_node],
         "proxy-groups": [{"name": "TEST", "type": "select", "proxies": [node["name"]]}],
@@ -541,6 +548,9 @@ def write_yaml(results, path, warp_proxy):
         node = {
             **item["proxy"],
             "dialer-proxy": "WARP",
+            # Enable inner UDP relay across all OpenVPN TUN nodes (including proto: tcp)
+            # so UDP DNS (port 53) and UDP apps do not fail when a TCP OpenVPN node is selected.
+            "udp": True,
             "mtu": min(int(item["proxy"].get("mtu", 1200)), warp_mtu - 80),
             "remote-dns-resolve": True,
             "dns": item["proxy"].get("dns") or ["1.1.1.1", "8.8.8.8"],
@@ -564,9 +574,11 @@ def write_yaml(results, path, warp_proxy):
             "enhanced-mode": "fake-ip",
             "fake-ip-range": "198.18.0.1/16",
             "default-nameserver": ["1.1.1.1", "8.8.8.8"],
+            # Route Mihomo's upstream DNS queries through #WARP rather than GLOBAL/VPNGate
+            # so DNS resolution never deadlocks while a VPNGate OpenVPN node is handshaking.
             "nameserver": [
-                "https://cloudflare-dns.com/dns-query#出站节点",
-                "https://dns.google/dns-query#出站节点",
+                "https://1.1.1.1/dns-query#WARP",
+                "https://8.8.8.8/dns-query#WARP",
             ],
             "proxy-server-nameserver": ["1.1.1.1", "8.8.8.8"],
         },
