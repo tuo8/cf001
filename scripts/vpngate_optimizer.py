@@ -271,7 +271,9 @@ def parse_profile(config, row):
         return None
 
     country = (row.get("CountryLong") or row.get("CountryShort") or "Unknown").strip()
-    label = re.sub(r"[^A-Za-z0-9._ -]", "", f"VPNGate {country} {row.get('IP') or host} {port} {proto}")[:80]
+    ip_text = (row.get("IP") or host).strip()
+    # Format node display name as "地区 + IP" (e.g. "Japan 106.168.67.207")
+    label = re.sub(r"[^A-Za-z0-9._ -]", "", f"{country} {ip_text}")[:80].strip()
     node = {
         "name": label,
         "type": "openvpn",
@@ -290,7 +292,7 @@ def parse_profile(config, row):
         # Force DNS resolution inside the OpenVPN tunnel (requires non-empty dns list)
         "remote-dns-resolve": True,
         "dns": ["1.1.1.1", "8.8.8.8"],
-        "handshake-timeout": 20,
+        "handshake-timeout": 15,
         "ping": 10,
         "ping-restart": 60,
     }
@@ -457,14 +459,14 @@ def stop_node(process, log):
 
 def check_connectivity(proxy_url):
     """Confirm traffic passes through the selected VPN; do not measure speed or latency."""
-    for attempt in range(3):
+    for attempt in range(2):
         for url in CONNECTIVITY_URLS:
             response = None
             try:
                 response = requests.get(
                     url,
                     proxies={"http": proxy_url, "https": proxy_url},
-                    timeout=(15, 15),
+                    timeout=(10, 10),
                     allow_redirects=True,
                     stream=True,
                 )
@@ -475,7 +477,7 @@ def check_connectivity(proxy_url):
             finally:
                 if response is not None:
                     response.close()
-        if attempt < 2:
+        if attempt < 1:
             time.sleep(1)
     return False
 
@@ -568,11 +570,26 @@ def write_yaml(results, path, warp_proxy):
         raise RuntimeError("zero reachable nodes; refusing to publish empty subscription")
     document = {
         "ipv6": False,
+        "tun": {
+            "route-exclude-address": [
+                "10.0.0.0/8",
+                "127.0.0.0/8",
+                "172.16.0.0/12",
+                "192.168.0.0/16",
+            ],
+        },
         "dns": {
             "enable": True,
             "ipv6": False,
             "enhanced-mode": "fake-ip",
             "fake-ip-range": "198.18.0.1/16",
+            "fake-ip-filter": [
+                "*.lan",
+                "*.local",
+                "localhost.ptlogin2.qq.com",
+                "ipv6.*",
+                "*.ipv6.*",
+            ],
             "default-nameserver": ["1.1.1.1", "8.8.8.8"],
             # Route Mihomo's upstream DNS queries through #WARP rather than GLOBAL/VPNGate
             # so DNS resolution never deadlocks while a VPNGate OpenVPN node is handshaking.
