@@ -73,13 +73,27 @@ def load_warp_config(raw=None):
 
 
 def build_warp_proxy(config):
-    peer = {"server": config["endpoint"], "port": config["port"],
-            "public-key": config["peer_public_key"], "allowed-ips": ["0.0.0.0/0"],
-            "persistent-keepalive": config["keepalive"]}
+    peer = {
+        "server": config["endpoint"],
+        "port": config["port"],
+        "public-key": config["peer_public_key"],
+        "allowed-ips": ["0.0.0.0/0"],
+        "persistent-keepalive": config["keepalive"],
+    }
     if config.get("reserved") is not None:
         peer["reserved"] = config["reserved"]
-    return {"name": "WARP", "type": "wireguard", "private-key": config["private_key"],
-            "ip": config["ipv4"], "udp": True, "mtu": config["mtu"], "peers": [peer]}
+    return {
+        "name": "WARP",
+        "type": "wireguard",
+        "private-key": config["private_key"],
+        "ip": config["ipv4"],
+        "udp": True,
+        "mtu": config["mtu"],
+        "persistent-keepalive": config["keepalive"],
+        "remote-dns-resolve": True,
+        "dns": ["1.1.1.1", "1.0.0.1"],
+        "peers": [peer],
+    }
 
 
 def warp_port_candidates(config):
@@ -195,6 +209,7 @@ def probe_warp(binary, warp_config, diagnostic_root):
         "or publish a new subscription. " + " | ".join(failures)
     )
 
+
 def decode_config(value):
     value = (value or "").strip()
     if not value:
@@ -267,6 +282,17 @@ def parse_profile(config, row):
         "username": "vpn",
         "password": "vpn",
         "ca": blocks["ca"],
+        # Explicit OpenVPN/VPNGate defaults so Mihomo does not fall back to AES-128-GCM / SHA256
+        "cipher": "AES-128-CBC",
+        "auth": "SHA1",
+        # Inner OpenVPN MTU must be smaller than outer WARP MTU (1280) to avoid fragmentation blackholes
+        "mtu": 1200,
+        # Force DNS resolution inside the OpenVPN tunnel (requires non-empty dns list)
+        "remote-dns-resolve": True,
+        "dns": ["1.1.1.1", "8.8.8.8"],
+        "handshake-timeout": 20,
+        "ping": 10,
+        "ping-restart": 60,
     }
     for key in ("cert", "key", "tls-auth", "tls-crypt", "tls-crypt-v2"):
         if blocks.get(key):
@@ -280,11 +306,17 @@ def parse_profile(config, row):
             node[key] = found[0][0].upper()
     data_ciphers = values("data-ciphers")
     if data_ciphers:
-        node["data-ciphers"] = [
+        parsed_ciphers = [
             item.upper()
-            for item in re.split(r"[:,\s]+", " ".join(data_ciphers[0]))
+            for item in re.split(r"[:, \s]+", " ".join(data_ciphers[0]))
             if item
         ]
+        for fallback_cipher in (node["cipher"], "AES-256-GCM", "AES-128-GCM", "AES-128-CBC"):
+            if fallback_cipher and fallback_cipher not in parsed_ciphers:
+                parsed_ciphers.append(fallback_cipher)
+        node["data-ciphers"] = parsed_ciphers
+    node.setdefault("data-ciphers-fallback", node["cipher"])
+
     compression = occurrences("comp-lzo")
     if compression:
         # OpenVPN accepts both "comp-lzo" and "comp-lzo yes".
@@ -314,7 +346,7 @@ def parse_csv(text):
     for row in rows:
         if not row.get("HostName") or row["HostName"].startswith("*"):
             continue
-        encoded = row.get("OpenVPN_ConfigData_Base64") or row.get("OpenVPN_Config")
+        encoded = row.get("OpenVPN_ConfigFileData_Base64") or row.get("OpenVPN_ConfigData_Base64")
         item = parse_profile(decode_config(encoded), row)
         if item:
             proxy = item["proxy"]
@@ -352,11 +384,25 @@ def _log_tail(path, limit=5000):
 def start_node(node, binary, folder, warp_proxy):
     folder.mkdir(parents=True, exist_ok=True)
     port = free_port()
+    chained_node = {
+        **node,
+        "dialer-proxy": "WARP",
+        "mtu": min(int(node.get("mtu", 1200)), int(warp_proxy.get("mtu", 1280)) - 80),
+        "remote-dns-resolve": True,
+        "dns": node.get("dns") or ["1.1.1.1", "8.8.8.8"],
+    }
     config = {
         "mixed-port": port,
         "mode": "rule",
         "log-level": "debug",
-        "proxies": [warp_proxy, {**node, "dialer-proxy": "WARP"}],
+        "ipv6": False,
+        "dns": {
+            "enable": True,
+            "ipv6": False,
+            "default-nameserver": ["1.1.1.1", "8.8.8.8"],
+            "nameserver": ["https://cloudflare-dns.com/dns-query", "https://dns.google/dns-query"],
+        },
+        "proxies": [warp_proxy, chained_node],
         "proxy-groups": [{"name": "TEST", "type": "select", "proxies": [node["name"]]}],
         "rules": ["MATCH,TEST"],
     }
@@ -394,11 +440,11 @@ def start_node(node, binary, folder, warp_proxy):
 def stop_node(process, log):
     if process.poll() is None:
         process.terminate()
-    try:
-        process.wait(timeout=3)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=2)
+        try:
+            process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=2)
     log.close()
 
 
@@ -411,7 +457,7 @@ def check_connectivity(proxy_url):
                 response = requests.get(
                     url,
                     proxies={"http": proxy_url, "https": proxy_url},
-                    timeout=(5, 8),
+                    timeout=(15, 15),
                     allow_redirects=True,
                     stream=True,
                 )
@@ -472,7 +518,7 @@ def _run_probes(items, binary, workers, diagnostic_root, warp_proxy):
                     print(f"连通性通过: {item['country']} | {item['proxy']['name']}")
             except Exception as error:
                 print(f"probe error {item['proxy']['name']}: {type(error).__name__}: {error}")
-    return [passed_by_index[index] for index in sorted(passed_by_index)]
+        return [passed_by_index[index] for index in sorted(passed_by_index)]
 
 
 def test_many(items, binary, workers, warp_proxy):
@@ -490,8 +536,15 @@ def test_many(items, binary, workers, warp_proxy):
 def write_yaml(results, path, warp_proxy):
     nodes = []
     used_names = set()
+    warp_mtu = int(warp_proxy.get("mtu", 1280))
     for item in results:
-        node = {**item["proxy"], "dialer-proxy": "WARP"}
+        node = {
+            **item["proxy"],
+            "dialer-proxy": "WARP",
+            "mtu": min(int(item["proxy"].get("mtu", 1200)), warp_mtu - 80),
+            "remote-dns-resolve": True,
+            "dns": item["proxy"].get("dns") or ["1.1.1.1", "8.8.8.8"],
+        }
         base_name = str(node.get("name") or "VPNGate node")
         unique_name = base_name
         suffix = 2
@@ -504,6 +557,19 @@ def write_yaml(results, path, warp_proxy):
     if not nodes:
         raise RuntimeError("zero reachable nodes; refusing to publish empty subscription")
     document = {
+        "ipv6": False,
+        "dns": {
+            "enable": True,
+            "ipv6": False,
+            "enhanced-mode": "fake-ip",
+            "fake-ip-range": "198.18.0.1/16",
+            "default-nameserver": ["1.1.1.1", "8.8.8.8"],
+            "nameserver": [
+                "https://cloudflare-dns.com/dns-query#出站节点",
+                "https://dns.google/dns-query#出站节点",
+            ],
+            "proxy-server-nameserver": ["1.1.1.1", "8.8.8.8"],
+        },
         "proxies": [warp_proxy] + nodes,
         "proxy-groups": [
             # One manual picker: WARP is first (and therefore the safe default);
