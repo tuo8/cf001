@@ -10,10 +10,22 @@
  *   - ?ip=162.159.193.1             Overrides primary WARP server IP
  *   - ?port=500                     Overrides primary WARP UDP port (e.g. 2408, 500, 1701, 4500)
  *   - ?mtu=1380                     Overrides WARP MTU
- *   - ?awg=0                        Strips amnezia-wg-option block for legacy clients that do not support AmneziaWG
+ *   - ?awg=1                        Injects amnezia-wg-option pulse obfuscation block into WARP nodes
+ *   - ?awg=0                        Strips amnezia-wg-option block if present
  *   - ?dialer=pool                  Chains all OpenVPN nodes to "🌐 WARP 前置池" (auto url-test group) instead of single "WARP"
  *   - ?nocache=1                    Bypasses edge cache and reads directly from KV
  */
+
+const AWG_BLOCK = `    amnezia-wg-option:
+      jc: 4
+      jmin: 40
+      jmax: 70
+      s1: 0
+      s2: 0
+      h1: 1
+      h2: 2
+      h3: 3
+      h4: 4`;
 
 function applyDynamicOverrides(yamlText, searchParams) {
   let output = yamlText;
@@ -69,10 +81,14 @@ function applyDynamicOverrides(yamlText, searchParams) {
     output = output.replace(/dialer-proxy:\s*WARP\b/g, "dialer-proxy: 🌐 WARP 前置池");
   }
 
-  // Strip amnezia-wg-option block if ?awg=0 is passed for older Mihomo cores
+  // Dynamically inject or strip amnezia-wg-option block
   const awgParam = (searchParams.get("awg") || "").trim().toLowerCase();
   if (awgParam === "0" || awgParam === "false" || awgParam === "off") {
     output = output.replace(/\n\s*amnezia-wg-option:\n(?:\s{4,}.*\n)*/g, "\n");
+  } else if (awgParam === "1" || awgParam === "true" || awgParam === "on") {
+    if (!output.includes("amnezia-wg-option:")) {
+      output = output.replace(/(type:\s*wireguard\n)/g, `$1${AWG_BLOCK}\n`);
+    }
   }
 
   return output;
@@ -109,7 +125,6 @@ export default {
     }
 
     const noCache = url.searchParams.get("nocache") === "1";
-    // Utilize KV edge caching (cacheTtl: 300s) to accelerate repeated subscription fetches
     const kvOptions = noCache ? { type: "text" } : { type: "text", cacheTtl: 300 };
     const rawBody = await env.SUBSCRIPTIONS.get(key, kvOptions);
     if (!rawBody) {

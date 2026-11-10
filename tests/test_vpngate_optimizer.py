@@ -111,18 +111,28 @@ KEY
             ["node-fast", "node-mid", "node-slow"],
         )
 
-    def test_warp_config_and_amnezia_wg_proxy(self):
+    def test_warp_config_and_proxy(self):
         key = base64.b64encode(bytes(range(32))).decode()
         config = module.load_warp_config(__import__("json").dumps({
             "private_key": key, "peer_public_key": key, "ipv4": "172.16.0.2",
             "reserved": [1, 2, 3]
         }))
+        self.assertEqual(config["mtu"], 1280)
+        self.assertEqual(config["keepalive"], 25)
         proxy = module.build_warp_proxy(config)
         self.assertEqual(proxy["type"], "wireguard")
         self.assertEqual(proxy["ip"], "172.16.0.2")
         self.assertEqual(proxy["peers"][0]["reserved"], [1, 2, 3])
-        self.assertIn("amnezia-wg-option", proxy)
-        self.assertEqual(proxy["amnezia-wg-option"]["jc"], 4)
+
+    def test_warp_amnezia_wg_opt_in(self):
+        key = base64.b64encode(bytes(range(32))).decode()
+        with patch.dict(module.os.environ, {"VPNGATE_ENABLE_AWG": "1"}):
+            config = module.load_warp_config(__import__("json").dumps({
+                "private_key": key, "peer_public_key": key, "ipv4": "172.16.0.2"
+            }))
+            proxy = module.build_warp_proxy(config)
+            self.assertIn("amnezia-wg-option", proxy)
+            self.assertEqual(proxy["amnezia-wg-option"]["jc"], 4)
 
     def test_warp_reserved_defaults_to_current_registration(self):
         key = base64.b64encode(bytes(range(32))).decode()

@@ -108,7 +108,7 @@ func parseConfig(raw string) (warpConfig, error) {
 	}
 	keepalive := intField(input, "keepalive")
 	if keepalive == 0 {
-		keepalive = 15
+		keepalive = 25
 	}
 	if keepalive < 0 || keepalive > 65535 {
 		return warpConfig{}, errors.New("WARP keepalive is outside 0..65535")

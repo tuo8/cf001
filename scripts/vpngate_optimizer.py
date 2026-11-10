@@ -42,8 +42,8 @@ DEFAULT_WARP_OPTIMAL_ENDPOINTS = (
     "188.114.98.1",
 )
 
-# AmneziaWG 1.0 compatible pulse obfuscation parameters supported by Mihomo
-# to bypass ISP UDP DPI blocking without triggering Mihomo issue #3033.
+# AmneziaWG 1.0 pulse obfuscation parameters (can be enabled via VPNGATE_ENABLE_AWG=1 or Worker ?awg=1).
+# Disabled by default during CI Mihomo v1.19.33 probes to avoid Mihomo WireGuard parser issue #3033.
 DEFAULT_AMNEZIA_WG_OPTION = {
     "jc": 4,
     "jmin": 40,
@@ -91,8 +91,7 @@ def load_warp_config(raw=None):
     port_override = os.getenv("VPNGATE_WARP_PORT")
     port = int(port_override) if port_override else int(config.get("port", 2408))
     mtu = int(config.get("mtu", 1280))
-    # Default keepalive reduced from 25s to 15s to prevent domestic ISP UDP NAT timeout.
-    keepalive = int(config.get("keepalive", 15))
+    keepalive = int(config.get("keepalive", 25))
     if not isinstance(endpoint, str) or not endpoint or any(ch.isspace() for ch in endpoint):
         raise ValueError("Invalid WARP endpoint")
     if not 1 <= port <= 65535 or not 576 <= mtu <= 9000 or not 0 <= keepalive <= 65535:
@@ -101,7 +100,7 @@ def load_warp_config(raw=None):
     if reserved is not None and (not isinstance(reserved, list) or len(reserved) != 3 or any(type(v) is not int or not 0 <= v <= 255 for v in reserved)):
         raise ValueError("WARP reserved must be a three-byte integer array")
 
-    enable_awg = os.getenv("VPNGATE_ENABLE_AWG", "1").strip().lower() not in ("0", "false", "no")
+    enable_awg = os.getenv("VPNGATE_ENABLE_AWG", "0").strip().lower() in ("1", "true", "yes")
     awg_option = config.get("amnezia_wg_option")
     if awg_option is None and enable_awg:
         awg_option = DEFAULT_AMNEZIA_WG_OPTION.copy()
@@ -398,9 +397,9 @@ def parse_profile(config, row):
         # Force DNS resolution inside the OpenVPN tunnel (requires non-empty dns list)
         "remote-dns-resolve": True,
         "dns": ["1.1.1.1", "8.8.8.8"],
-        "handshake-timeout": 12,
+        "handshake-timeout": 15,
         "ping": 10,
-        "ping-restart": 45,
+        "ping-restart": 60,
     }
     for key in ("cert", "key", "tls-auth", "tls-crypt", "tls-crypt-v2"):
         if blocks.get(key):
@@ -419,12 +418,10 @@ def parse_profile(config, row):
             for item in re.split(r"[:,\s]+", " ".join(data_ciphers[0]))
             if item
         ]
-        for fallback_cipher in ("AES-128-GCM", "AES-256-GCM", "CHACHA20-POLY1305", node["cipher"], "AES-128-CBC"):
+        for fallback_cipher in (node["cipher"], "AES-256-GCM", "AES-128-GCM", "AES-128-CBC"):
             if fallback_cipher and fallback_cipher not in parsed_ciphers:
                 parsed_ciphers.append(fallback_cipher)
         node["data-ciphers"] = parsed_ciphers
-    else:
-        node["data-ciphers"] = ["AES-128-GCM", "AES-256-GCM", "CHACHA20-POLY1305", node["cipher"]]
     node.setdefault("data-ciphers-fallback", node["cipher"])
 
     compression = occurrences("comp-lzo")
@@ -477,9 +474,9 @@ def filter_candidates(items):
     """Pre-filter and prioritize candidates by region, bandwidth, UDP preference, and ping."""
     if not items:
         return []
-    min_speed = int(os.getenv("VPNGATE_MIN_SPEED_BPS", "10000000"))  # Default 10 Mbps
-    max_ping = int(os.getenv("VPNGATE_MAX_PING_MS", "200"))          # Default 200 ms
-    max_candidates = int(os.getenv("VPNGATE_MAX_CANDIDATES", "45"))  # Probe top 45 candidates
+    min_speed = int(os.getenv("VPNGATE_MIN_SPEED_BPS", "5000000"))    # Default 5 Mbps
+    max_ping = int(os.getenv("VPNGATE_MAX_PING_MS", "250"))          # Default 250 ms
+    max_candidates = int(os.getenv("VPNGATE_MAX_CANDIDATES", "60"))  # Probe top 60 candidates
 
     filtered = [
         item for item in items
@@ -487,7 +484,7 @@ def filter_candidates(items):
         and (0 <= item.get("ping_ms", 50) <= max_ping or item.get("ping_ms", 0) == 0)
     ]
     # Fallback to all items if strict threshold filtered out too many nodes
-    if len(filtered) < min(8, len(items)):
+    if len(filtered) < min(12, len(items)):
         filtered = list(items)
 
     def candidate_sort_key(item):
@@ -515,7 +512,7 @@ def fetch():
         try:
             response = requests.get(
                 url,
-                timeout=35,
+                timeout=40,
                 headers={"User-Agent": "cf001-vpngate/2.0", "Cache-Control": "no-cache"},
             )
             response.raise_for_status()
@@ -554,7 +551,7 @@ def start_node(node, binary, folder, warp_proxy):
     config = {
         "mixed-port": port,
         "mode": "rule",
-        "log-level": "warning",
+        "log-level": "debug",
         "ipv6": False,
         "dns": {
             "enable": True,
@@ -579,7 +576,7 @@ def start_node(node, binary, folder, warp_proxy):
         stdout=log,
         stderr=subprocess.STDOUT,
     )
-    deadline = time.monotonic() + 8
+    deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
         if process.poll() is not None:
             log.flush()
@@ -589,7 +586,7 @@ def start_node(node, binary, folder, warp_proxy):
             with socket.create_connection(("127.0.0.1", port), timeout=0.2):
                 return process, log, port
         except OSError:
-            time.sleep(0.08)
+            time.sleep(0.1)
     process.terminate()
     try:
         process.wait(timeout=2)
@@ -613,8 +610,7 @@ def stop_node(process, log):
 
 
 def measure_connectivity(proxy_url):
-    """Measure real HTTPS round-trip latency (ms) through the chained VPN tunnel."""
-    best_latency_ms = None
+    """Confirm traffic passes through the selected VPN and measure warm tunnel RTT (ms)."""
     for attempt in range(2):
         for url in CONNECTIVITY_URLS:
             response = None
@@ -623,22 +619,37 @@ def measure_connectivity(proxy_url):
                 response = requests.get(
                     url,
                     proxies={"http": proxy_url, "https": proxy_url},
-                    timeout=(5, 6),
+                    timeout=(10, 10),
                     allow_redirects=True,
                     stream=True,
                 )
                 elapsed_ms = int((time.monotonic() - start_ts) * 1000)
                 if response.status_code in (200, 204, 301, 302):
-                    if best_latency_ms is None or elapsed_ms < best_latency_ms:
-                        best_latency_ms = elapsed_ms
-                    return True, best_latency_ms
+                    response.close()
+                    response = None
+                    # Perform one quick warm-tunnel ping to measure pure data-plane RTT without cold handshake overhead
+                    warm_start = time.monotonic()
+                    try:
+                        warm_resp = requests.get(
+                            url,
+                            proxies={"http": proxy_url, "https": proxy_url},
+                            timeout=(4, 4),
+                            allow_redirects=False,
+                            stream=True,
+                        )
+                        if warm_resp.status_code in (200, 204, 301, 302):
+                            elapsed_ms = min(elapsed_ms, int((time.monotonic() - warm_start) * 1000))
+                        warm_resp.close()
+                    except requests.RequestException:
+                        pass
+                    return True, elapsed_ms
             except requests.RequestException:
                 pass
             finally:
                 if response is not None:
                     response.close()
         if attempt < 1:
-            time.sleep(0.5)
+            time.sleep(1)
     return False, None
 
 
@@ -682,7 +693,7 @@ def probe(item, binary, folder, warp_proxy):
 
 
 def _run_probes(items, binary, workers, diagnostic_root, warp_proxy):
-    max_pool = max(1, min(int(workers), 12))
+    max_pool = max(1, min(int(workers), 10))
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_pool) as pool:
         jobs = {
             pool.submit(probe, item, binary, diagnostic_root / str(index), warp_proxy): (index, item)
@@ -707,7 +718,7 @@ def _run_probes(items, binary, workers, diagnostic_root, warp_proxy):
                     -x.get("speed_bps", 0),
                 )
             )
-        max_output = int(os.getenv("VPNGATE_MAX_OUTPUT_NODES", "25"))
+        max_output = int(os.getenv("VPNGATE_MAX_OUTPUT_NODES", "30"))
         if max_output > 0 and len(ordered) > max_output:
             ordered = ordered[:max_output]
         return ordered
@@ -846,7 +857,7 @@ def main():
     parser.add_argument(
         "--workers",
         type=int,
-        default=int(os.getenv("VPNGATE_PROBE_WORKERS", "8")),
+        default=int(os.getenv("VPNGATE_PROBE_WORKERS", "6")),
     )
     parser.add_argument("--parse-only", action="store_true")
     args = parser.parse_args()
