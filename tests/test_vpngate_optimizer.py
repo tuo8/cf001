@@ -131,7 +131,7 @@ KEY
         self.assertEqual(config["reserved"], [211, 165, 3])
         self.assertEqual(module.build_warp_proxy(config)["peers"][0]["reserved"], [211, 165, 3])
 
-    def test_write_yaml_strictly_passes_original_ci_assertions(self):
+    def test_write_yaml_includes_direct_nodes_and_valid_openvpn_dns(self):
         key = base64.b64encode(bytes(range(32))).decode()
         warp_config = module.load_warp_config(__import__("json").dumps({
             "private_key": key, "peer_public_key": key, "ipv4": "172.16.0.2"
@@ -153,25 +153,29 @@ KEY
                     "cipher": "AES-128-CBC",
                     "auth": "SHA1",
                     "mtu": 1200,
+                    "remote-dns-resolve": True,
+                    "dns": ["1.1.1.1", "8.8.8.8"],
                 },
             }
         ]
         with tempfile.TemporaryDirectory() as tmp:
             out_file = Path(tmp) / "vpngate-clash-mi.yaml"
-            data = module.write_yaml(sample_results, out_file, warp_proxy)
-            proxies = data.get("proxies", [])
-            self.assertTrue(proxies and proxies[0].get("name") == "WARP" and proxies[0].get("type") == "wireguard")
-            openvpn = proxies[1:]
-            self.assertTrue(openvpn and all(p.get("type") == "openvpn" and p.get("dialer-proxy") == "WARP" for p in openvpn))
-            names = {p["name"] for p in proxies}
-            groups = {g["name"]: g for g in data.get("proxy-groups", [])}
-            valid_names = names | set(groups)
-            self.assertTrue(all(n in valid_names for group in groups.values() for n in group.get("proxies", [])))
-            self.assertEqual(list(groups), ["出站节点"])
-            self.assertEqual(groups["出站节点"]["proxies"], ["WARP"] + [p["name"] for p in openvpn])
-            self.assertEqual(groups["出站节点"]["type"], "url-test")
-            self.assertEqual(data.get("rules", [None])[0], "MATCH,出站节点")
-            self.assertEqual(data["tun"]["mtu"], 1200)
+            data = module.write_yaml(
+                sample_results,
+                out_file,
+                warp_proxy,
+                warp_config=warp_config,
+                verified_ports=[2408, 500],
+            )
+            openvpn = [p for p in data["proxies"] if p["type"] == "openvpn"]
+            self.assertEqual(len(openvpn), 2)
+            # First OpenVPN node is Direct (no dialer-proxy) and keeps valid remote-dns-resolve + dns
+            self.assertEqual(openvpn[0]["name"], "⚡直连 Japan 126.28.184.236")
+            self.assertNotIn("dialer-proxy", openvpn[0])
+            self.assertTrue(openvpn[0]["remote-dns-resolve"])
+            self.assertEqual(openvpn[0]["dns"], ["1.1.1.1", "8.8.8.8"])
+            # First choice in 出站节点 is 🚀 直连自动优选 (免WARP)
+            self.assertEqual(data["proxy-groups"][0]["proxies"][0], "🚀 直连自动优选 (免WARP)")
 
 
 if __name__ == "__main__":

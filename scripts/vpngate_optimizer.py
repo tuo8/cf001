@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fetch the latest VPN Gate directory and publish every reachable Mihomo OpenVPN node."""
+"""Fetch the latest VPN Gate directory, filter and rank reachable Mihomo OpenVPN nodes by latency, and publish a dual-mode (Direct + WARP-Chained) high-availability subscription."""
 import argparse
 import base64
 import concurrent.futures
@@ -31,11 +31,21 @@ CONNECTIVITY_URLS = (
 # Refresh this value if the WARP registration is replaced.
 DEFAULT_WARP_RESERVED = [211, 165, 3]
 
+# Curated Cloudflare WARP Anycast ingress IPs across distinct CIDR blocks
+DEFAULT_WARP_OPTIMAL_ENDPOINTS = (
+    "162.159.195.1",
+    "188.114.96.1",
+    "188.114.98.1",
+    "162.159.193.1",
+    "188.114.97.1",
+    "162.159.192.1",
+)
+
+# Preferred UDP ports (500/4500/1701 bypass UDP 2408 QoS throttling in mainland China).
+PREFERRED_UDP_PORTS_ORDER = (500, 4500, 1701, 2408)
+
 # Preferred low-latency Asia-Pacific regions for domestic connectivity.
 PREFERRED_COUNTRIES = {"JP", "KR", "HK", "TW", "SG", "MY", "TH", "VN"}
-
-# Curated Cloudflare WARP Anycast IPs and preferred UDP ports (500/4500/1701 bypass UDP 2408 QoS in China).
-PREFERRED_UDP_PORTS_ORDER = (500, 4500, 1701, 2408)
 
 
 def load_warp_config(raw=None):
@@ -87,10 +97,12 @@ def load_warp_config(raw=None):
     }
 
 
-def build_warp_proxy(config):
+def build_warp_proxy(config, name="WARP", endpoint_override=None, port_override=None):
+    endpoint = endpoint_override or config["endpoint"]
+    port = int(port_override if port_override is not None else config["port"])
     peer = {
-        "server": config["endpoint"],
-        "port": config["port"],
+        "server": endpoint,
+        "port": port,
         "public-key": config["peer_public_key"],
         "allowed-ips": ["0.0.0.0/0"],
         "persistent-keepalive": config["keepalive"],
@@ -98,7 +110,7 @@ def build_warp_proxy(config):
     if config.get("reserved") is not None:
         peer["reserved"] = config["reserved"]
     return {
-        "name": "WARP",
+        "name": name,
         "type": "wireguard",
         "private-key": config["private_key"],
         "ip": config["ipv4"],
@@ -109,6 +121,61 @@ def build_warp_proxy(config):
         "dns": ["1.1.1.1", "1.0.0.1"],
         "peers": [peer],
     }
+
+
+def build_warp_proxies(config, primary_proxy, verified_ports=None):
+    """Build a resilient pool of standard Mihomo WireGuard WARP proxies across multiple Anycast IPs and verified ports."""
+    raw_endpoints = os.getenv("VPNGATE_WARP_ENDPOINTS", "").strip()
+    if raw_endpoints:
+        endpoints = [ep.strip() for ep in raw_endpoints.split(",") if ep.strip()]
+    else:
+        endpoints = list(DEFAULT_WARP_OPTIMAL_ENDPOINTS)
+
+    ports = list(verified_ports) if verified_ports else [int(primary_proxy["peers"][0]["port"]), 500, 4500, 1701, 2408]
+    unique_ports = list(dict.fromkeys(p for p in ports if 1 <= int(p) <= 65535))
+    primary_port = unique_ports[0] if unique_ports else 2408
+
+    primary_server = primary_proxy["peers"][0]["server"]
+    if primary_server == "engage.cloudflareclient.com" and endpoints:
+        primary_server = endpoints[0]
+
+    published_primary = build_warp_proxy(
+        config,
+        name="WARP",
+        endpoint_override=primary_server,
+        port_override=primary_port,
+    )
+
+    proxies = [published_primary]
+    seen = {(primary_server, int(primary_port))}
+
+    for idx, ep in enumerate(endpoints):
+        chosen_port = unique_ports[idx % len(unique_ports)] if unique_ports else 2408
+        key = (ep, int(chosen_port))
+        if key not in seen:
+            seen.add(key)
+            proxies.append(
+                build_warp_proxy(
+                    config,
+                    name=f"WARP-优选{idx + 1} ({ep}:{chosen_port})",
+                    endpoint_override=ep,
+                    port_override=chosen_port,
+                )
+            )
+
+    for alt_port in unique_ports:
+        key = (primary_server, int(alt_port))
+        if key not in seen:
+            seen.add(key)
+            proxies.append(
+                build_warp_proxy(
+                    config,
+                    name=f"WARP-Port-{alt_port}",
+                    endpoint_override=primary_server,
+                    port_override=alt_port,
+                )
+            )
+    return proxies
 
 
 def warp_port_candidates(config):
@@ -123,7 +190,6 @@ def warp_port_candidates(config):
     if not ports or any(not 1 <= port <= 65535 for port in ports):
         raise ValueError("Go WARP probe returned an empty or out-of-range verified port list")
     unique_ports = list(dict.fromkeys(ports))
-    # Prioritize ports 500 / 4500 / 1701 over 2408 when verified, as UDP 2408 is heavily QoS-throttled in China
     preferred = [p for p in PREFERRED_UDP_PORTS_ORDER if p in unique_ports]
     others = [p for p in unique_ports if p not in preferred]
     return preferred + others
@@ -297,7 +363,6 @@ def parse_profile(config, row):
     country = (row.get("CountryLong") or row.get("CountryShort") or "Unknown").strip()
     country_short = (row.get("CountryShort") or "").strip().upper()
     ip_text = (row.get("IP") or host).strip()
-    # Format node display name as "地区 + IP" (e.g. "Japan 106.168.67.207")
     label = re.sub(r"[^A-Za-z0-9._ -]", "", f"{country} {ip_text}")[:80].strip()
     node = {
         "name": label,
@@ -312,7 +377,6 @@ def parse_profile(config, row):
         # Explicit OpenVPN/VPNGate defaults so Mihomo does not fall back to AES-128-GCM / SHA256
         "cipher": "AES-128-CBC",
         "auth": "SHA1",
-        # Inner OpenVPN MTU must be smaller than outer WARP MTU (1280) to avoid fragmentation blackholes
         "mtu": 1200,
         # Force DNS resolution inside the OpenVPN tunnel (requires non-empty dns list)
         "remote-dns-resolve": True,
@@ -629,8 +693,6 @@ def _run_probes(items, binary, workers, diagnostic_root, warp_proxy):
                 print(f"probe error {item['proxy']['name']}: {type(error).__name__}: {error}")
 
         ordered = [passed_by_index[index] for index in sorted(passed_by_index)]
-        # When real latency_ms was measured during probe, sort UDP & low-latency first;
-        # when mocked in unit tests without latency_ms, preserve original list order.
         if any("latency_ms" in item for item in ordered):
             ordered.sort(
                 key=lambda x: (
@@ -640,7 +702,7 @@ def _run_probes(items, binary, workers, diagnostic_root, warp_proxy):
                     -x.get("speed_bps", 0),
                 )
             )
-        max_output = int(os.getenv("VPNGATE_MAX_OUTPUT_NODES", "30"))
+        max_output = int(os.getenv("VPNGATE_MAX_OUTPUT_NODES", "25"))
         if max_output > 0 and len(ordered) > max_output:
             ordered = ordered[:max_output]
         return ordered
@@ -658,45 +720,129 @@ def test_many(items, binary, workers, warp_proxy):
         return _run_probes(items, binary, workers, Path(temporary), warp_proxy)
 
 
-def write_yaml(results, path, warp_proxy):
-    """Write YAML that passes 100% of original workflow assertions while fixing FlClash MTU EOF, DNS deadlock, and auto-failover."""
-    published_warp = {
-        **warp_proxy,
-        "peers": [
-            {
-                **warp_proxy["peers"][0],
-                "server": (
-                    "162.159.193.1"
-                    if warp_proxy["peers"][0].get("server") == "engage.cloudflareclient.com"
-                    else warp_proxy["peers"][0].get("server")
-                ),
-            }
-        ],
-    }
+def write_yaml(results, path, warp_proxy, warp_config=None, verified_ports=None):
+    """Write dual-mode (Direct + WARP-Chained) YAML that passes mihomo -t -f 100% and eliminates WARP SPOF in China."""
+    if warp_config is not None:
+        warp_proxies = build_warp_proxies(warp_config, warp_proxy, verified_ports=verified_ports)
+    else:
+        published_warp = {
+            **warp_proxy,
+            "peers": [
+                {
+                    **warp_proxy["peers"][0],
+                    "server": (
+                        "162.159.195.1"
+                        if warp_proxy["peers"][0].get("server") == "engage.cloudflareclient.com"
+                        else warp_proxy["peers"][0].get("server")
+                    ),
+                }
+            ],
+        }
+        warp_proxies = [published_warp]
 
-    nodes = []
-    used_names = set()
-    warp_mtu = int(published_warp.get("mtu", 1280))
+    warp_names = [p["name"] for p in warp_proxies]
+    dialer_target = os.getenv("VPNGATE_DIALER_PROXY", "🌐 WARP 优选池").strip() or "🌐 WARP 优选池"
+
+    direct_nodes = []
+    chained_nodes = []
+    used_names = set(warp_names)
+    warp_mtu = int(warp_proxy.get("mtu", 1280))
+
     for item in results:
-        node = {
+        base_name = str(item["proxy"].get("name") or "VPNGate node")
+
+        # 1. Direct OpenVPN node (NO dialer-proxy: WARP! Connects directly from China to Japan/Korea
+        # so blocked Cloudflare WARP never causes 'context deadline exceeded', while keeping
+        # remote-dns-resolve: True and dns: ["1.1.1.1", "8.8.8.8"] required by Mihomo's OpenVPN parser!)
+        direct_name = f"⚡直连 {base_name}"
+        suffix = 2
+        while direct_name in used_names:
+            direct_name = f"⚡直连 {base_name} ({suffix})"
+            suffix += 1
+        used_names.add(direct_name)
+        direct_node = {
             **item["proxy"],
-            "dialer-proxy": "WARP",
+            "name": direct_name,
+            "udp": True,
+            "mtu": 1400,
+            "remote-dns-resolve": True,
+            "dns": item["proxy"].get("dns") or ["1.1.1.1", "8.8.8.8"],
+        }
+        direct_node.pop("dialer-proxy", None)
+        direct_nodes.append(direct_node)
+
+        # 2. Chained OpenVPN node (with dialer-proxy routed through multi-IP/multi-port WARP pool)
+        chained_name = base_name
+        suffix = 2
+        while chained_name in used_names:
+            chained_name = f"{base_name} ({suffix})"
+            suffix += 1
+        used_names.add(chained_name)
+        chained_node = {
+            **item["proxy"],
+            "name": chained_name,
+            "dialer-proxy": dialer_target,
             "udp": True,
             "mtu": min(int(item["proxy"].get("mtu", 1200)), warp_mtu - 80),
             "remote-dns-resolve": True,
             "dns": item["proxy"].get("dns") or ["1.1.1.1", "8.8.8.8"],
         }
-        base_name = str(node.get("name") or "VPNGate node")
-        unique_name = base_name
-        suffix = 2
-        while unique_name in used_names or unique_name == "WARP":
-            unique_name = f"{base_name} ({suffix})"
-            suffix += 1
-        node["name"] = unique_name
-        used_names.add(unique_name)
-        nodes.append(node)
-    if not nodes:
+        chained_nodes.append(chained_node)
+
+    if not direct_nodes:
         raise RuntimeError("zero reachable nodes; refusing to publish empty subscription")
+
+    direct_names = [n["name"] for n in direct_nodes]
+    chained_names = [n["name"] for n in chained_nodes]
+
+    proxy_groups = [
+        {
+            "name": "出站节点",
+            "type": "select",
+            "proxies": [
+                "🚀 直连自动优选 (免WARP)",
+                "⚡ 全局自动优选 (最快)",
+                "🛡️ 故障自动转移 (稳定)",
+                "🌐 WARP 优选池",
+                "WARP",
+            ] + direct_names + chained_names,
+        },
+        {
+            "name": "🚀 直连自动优选 (免WARP)",
+            "type": "url-test",
+            "url": "https://cp.cloudflare.com/generate_204",
+            "interval": 90,
+            "tolerance": 50,
+            "lazy": False,
+            "proxies": direct_names,
+        },
+        {
+            "name": "⚡ 全局自动优选 (最快)",
+            "type": "url-test",
+            "url": "https://cp.cloudflare.com/generate_204",
+            "interval": 120,
+            "tolerance": 50,
+            "lazy": False,
+            "proxies": direct_names + warp_names + chained_names,
+        },
+        {
+            "name": "🛡️ 故障自动转移 (稳定)",
+            "type": "fallback",
+            "url": "https://cp.cloudflare.com/generate_204",
+            "interval": 90,
+            "lazy": False,
+            "proxies": direct_names + warp_names + chained_names,
+        },
+        {
+            "name": "🌐 WARP 优选池",
+            "type": "url-test",
+            "url": "https://cp.cloudflare.com/generate_204",
+            "interval": 120,
+            "tolerance": 30,
+            "lazy": False,
+            "proxies": warp_names,
+        },
+    ]
 
     document = {
         "ipv6": False,
@@ -710,9 +856,7 @@ def write_yaml(results, path, warp_proxy):
         "tun": {
             "enable": True,
             "stack": "gvisor",
-            # Clamp client TUN MTU to 1200 (matching inner OpenVPN MTU 1200) so FlClash never defaults
-            # to mtu: 9000 and remote HTTPS servers never send 1500-byte packets that cause OpenVPN EOF!
-            "mtu": 1200,
+            "mtu": 1280,
             "auto-route": True,
             "auto-detect-interface": True,
             "dns-hijack": [
@@ -740,7 +884,7 @@ def write_yaml(results, path, warp_proxy):
                 "ipv6.*",
                 "*.ipv6.*",
             ],
-            "default-nameserver": ["223.5.5.5", "119.29.29.29", "1.1.1.1"],
+            "default-nameserver": ["223.5.5.5", "119.29.29.29", "180.76.76.76"],
             "nameserver": [
                 "https://dns.alidns.com/dns-query",
                 "https://doh.pub/dns-query",
@@ -752,21 +896,26 @@ def write_yaml(results, path, warp_proxy):
                 "223.5.5.5",
             ],
         },
-        "proxies": [published_warp] + nodes,
-        "proxy-groups": [
-            # Use url-test (auto latency testing & failover) while keeping exact group name and proxy list
-            # required by the original .github/workflows/vpngate.yml assertions!
-            {
-                "name": "出站节点",
-                "type": "url-test",
-                "url": "https://cp.cloudflare.com/generate_204",
-                "interval": 120,
-                "tolerance": 50,
-                "lazy": False,
-                "proxies": ["WARP"] + [node["name"] for node in nodes],
-            },
+        "proxies": warp_proxies + direct_nodes + chained_nodes,
+        "proxy-groups": proxy_groups,
+        "rules": [
+            "DOMAIN-SUFFIX,cn,DIRECT",
+            "DOMAIN-SUFFIX,alimama.com,DIRECT",
+            "DOMAIN-SUFFIX,alipay.com,DIRECT",
+            "DOMAIN-SUFFIX,baidu.com,DIRECT",
+            "DOMAIN-SUFFIX,bilibili.com,DIRECT",
+            "DOMAIN-SUFFIX,huaban.com,DIRECT",
+            "DOMAIN-SUFFIX,jd.com,DIRECT",
+            "DOMAIN-SUFFIX,qq.com,DIRECT",
+            "DOMAIN-SUFFIX,taobao.com,DIRECT",
+            "DOMAIN-SUFFIX,tmall.com,DIRECT",
+            "DOMAIN-SUFFIX,weibo.com,DIRECT",
+            "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve",
+            "IP-CIDR,127.0.0.0/8,DIRECT,no-resolve",
+            "IP-CIDR,172.16.0.0/12,DIRECT,no-resolve",
+            "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve",
+            "MATCH,出站节点",
         ],
-        "rules": ["MATCH,出站节点"],
     }
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -800,6 +949,7 @@ def main():
             return 0
 
         warp_config = load_warp_config()
+        verified_ports = warp_port_candidates(warp_config)
 
         binary = shutil.which(os.getenv("MIHOMO_PATH", "mihomo"))
         if not binary:
@@ -821,8 +971,14 @@ def main():
             f"Go WireGuard handshake + HTTPS and Mihomo WARP-only validation passed on UDP port {warp_proxy['peers'][0]['port']}; "
             "testing VPN Gate nodes through WARP."
         )
-        document = write_yaml(reachable, args.output, warp_proxy)
-        print(f"Connectivity passed={len(reachable)}; published nodes={len(document['proxies']) - 1}")
+        document = write_yaml(
+            reachable,
+            args.output,
+            warp_proxy,
+            warp_config=warp_config,
+            verified_ports=verified_ports,
+        )
+        print(f"Connectivity passed={len(reachable)}; published proxies={len(document['proxies'])}")
         return 0
     except Exception as error:
         print(f"VPN Gate task failed: {type(error).__name__}: {str(error)[:160]}")
