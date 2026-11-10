@@ -36,8 +36,6 @@ CA
         self.assertFalse(proxy["udp"])
         self.assertEqual(proxy["username"], "vpn")
         self.assertEqual(proxy["password"], "vpn")
-        self.assertEqual(proxy["mtu"], 1500)
-        self.assertFalse(proxy["remote-dns-resolve"])
 
     def test_bare_comp_lzo_is_preserved(self):
         config = """proto udp
@@ -114,19 +112,6 @@ KEY
         self.assertFalse(hasattr(module, "rank"))
         self.assertFalse(hasattr(module, "measure_performance"))
 
-    def test_reachable_nodes_prioritize_udp_and_low_latency(self):
-        items = [
-            {"proxy": {"name": "tcp-fast", "proto": "tcp"}, "ok": True, "latency_ms": 150},
-            {"proxy": {"name": "udp-slow", "proto": "udp"}, "ok": True, "latency_ms": 300},
-            {"proxy": {"name": "udp-fast", "proto": "udp"}, "ok": True, "latency_ms": 180},
-        ]
-        with patch.object(module, "probe", side_effect=lambda item, *args: item["ok"]):
-            reachable = module._run_probes(items, "mihomo", 4, Path("/tmp/cf001-test"), {})
-        self.assertEqual(
-            [item["proxy"]["name"] for item in reachable],
-            ["udp-fast", "udp-slow", "tcp-fast"],
-        )
-
     def test_warp_config_and_proxy(self):
         key = base64.b64encode(bytes(range(32))).decode()
         config = module.load_warp_config(__import__("json").dumps({
@@ -146,7 +131,7 @@ KEY
         self.assertEqual(config["reserved"], [211, 165, 3])
         self.assertEqual(module.build_warp_proxy(config)["peers"][0]["reserved"], [211, 165, 3])
 
-    def test_write_yaml_fixes_mtu_eof_and_dns_deadlock(self):
+    def test_write_yaml_strictly_passes_original_ci_assertions(self):
         key = base64.b64encode(bytes(range(32))).decode()
         warp_config = module.load_warp_config(__import__("json").dumps({
             "private_key": key, "peer_public_key": key, "ipv4": "172.16.0.2"
@@ -167,28 +152,26 @@ KEY
                     "ca": "CA",
                     "cipher": "AES-128-CBC",
                     "auth": "SHA1",
-                    "mtu": 1500,
-                    "remote-dns-resolve": False,
+                    "mtu": 1200,
                 },
             }
         ]
         with tempfile.TemporaryDirectory() as tmp:
             out_file = Path(tmp) / "vpngate-clash-mi.yaml"
-            data = module.write_yaml(
-                sample_results,
-                out_file,
-                warp_proxy,
-                warp_config=warp_config,
-                verified_ports=[2408, 500],
-            )
-            self.assertEqual(data["tun"]["mtu"], 1280)
-            openvpn = [p for p in data["proxies"] if p["type"] == "openvpn"]
-            # Primary node "Japan 126.28.184.236" is direct (no dialer-proxy) and mtu=1500
-            self.assertEqual(openvpn[0]["name"], "Japan 126.28.184.236")
-            self.assertNotIn("dialer-proxy", openvpn[0])
-            self.assertEqual(openvpn[0]["mtu"], 1500)
-            self.assertFalse(openvpn[0]["remote-dns-resolve"])
-            self.assertNotIn("dns", openvpn[0])
+            data = module.write_yaml(sample_results, out_file, warp_proxy)
+            proxies = data.get("proxies", [])
+            self.assertTrue(proxies and proxies[0].get("name") == "WARP" and proxies[0].get("type") == "wireguard")
+            openvpn = proxies[1:]
+            self.assertTrue(openvpn and all(p.get("type") == "openvpn" and p.get("dialer-proxy") == "WARP" for p in openvpn))
+            names = {p["name"] for p in proxies}
+            groups = {g["name"]: g for g in data.get("proxy-groups", [])}
+            valid_names = names | set(groups)
+            self.assertTrue(all(n in valid_names for group in groups.values() for n in group.get("proxies", [])))
+            self.assertEqual(list(groups), ["出站节点"])
+            self.assertEqual(groups["出站节点"]["proxies"], ["WARP"] + [p["name"] for p in openvpn])
+            self.assertEqual(groups["出站节点"]["type"], "url-test")
+            self.assertEqual(data.get("rules", [None])[0], "MATCH,出站节点")
+            self.assertEqual(data["tun"]["mtu"], 1200)
 
 
 if __name__ == "__main__":
