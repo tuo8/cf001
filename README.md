@@ -26,6 +26,7 @@
 - Worker secret：`VPNGATE_TOKEN`（新路径）或兼容旧路径的 `SUBSCRIPTION_TOKEN`
 - 新订阅路径：`/vpngate/<VPNGATE_TOKEN>`
 - KV key：`vpngate-clash-mi.yaml`
+- Worker 只负责读取 KV 并返回已验证 YAML；不再通过文本方式克隆 OpenVPN 节点或重建代理组，避免重复 YAML anchor 导致订阅无法解析。
 
 ## GitHub Actions 设置
 

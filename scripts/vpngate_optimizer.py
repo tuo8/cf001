@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fetch the latest VPN Gate directory, filter and rank reachable Mihomo OpenVPN nodes by latency, and publish a dual-mode (Direct + WARP-Chained) high-availability subscription."""
+"""Fetch the latest VPN Gate directory, filter and rank reachable Mihomo OpenVPN nodes by latency, and publish a WARP-chained subscription with one outbound selector."""
 import argparse
 import base64
 import concurrent.futures
@@ -721,148 +721,45 @@ def test_many(items, binary, workers, warp_proxy):
 
 
 def write_yaml(results, path, warp_proxy, warp_config=None, verified_ports=None):
-    """Write dual-mode (Direct + WARP-Chained) YAML that passes mihomo -t -f 100% and eliminates WARP SPOF in China."""
-    if warp_config is not None:
-        warp_proxies = build_warp_proxies(warp_config, warp_proxy, verified_ports=verified_ports)
-    else:
-        published_warp = {
-            **warp_proxy,
-            "peers": [
-                {
-                    **warp_proxy["peers"][0],
-                    "server": (
-                        "162.159.195.1"
-                        if warp_proxy["peers"][0].get("server") == "engage.cloudflareclient.com"
-                        else warp_proxy["peers"][0].get("server")
-                    ),
-                }
-            ],
-        }
-        warp_proxies = [published_warp]
+    """Write the Clash Mi profile with one outbound selector and WARP-chained VPN Gate nodes.
 
-    warp_names = [p["name"] for p in warp_proxies]
-    dialer_target = os.getenv("VPNGATE_DIALER_PROXY", "🌐 WARP 优选池").strip() or "🌐 WARP 优选池"
-
-    direct_nodes = []
-    chained_nodes = []
-    used_names = set(warp_names)
+    Keep the WARP probe's selected, verified endpoint as the single WARP outbound.
+    Every published OpenVPN node is chained through that outbound, matching the
+    workflow's safety checks and the project's one-selector profile contract.
+    """
+    warp_proxy = {**warp_proxy, "name": "WARP"}
+    nodes = []
+    used_names = {"WARP"}
     warp_mtu = int(warp_proxy.get("mtu", 1280))
 
     for item in results:
-        base_name = str(item["proxy"].get("name") or "VPNGate node")
-
-        # 1. Direct OpenVPN node (NO dialer-proxy: WARP! Connects directly from China to Japan/Korea
-        # so blocked Cloudflare WARP never causes 'context deadline exceeded', while keeping
-        # remote-dns-resolve: True and dns: ["1.1.1.1", "8.8.8.8"] required by Mihomo's OpenVPN parser!)
-        direct_name = f"⚡直连 {base_name}"
-        suffix = 2
-        while direct_name in used_names:
-            direct_name = f"⚡直连 {base_name} ({suffix})"
-            suffix += 1
-        used_names.add(direct_name)
-        direct_node = {
+        node = {
             **item["proxy"],
-            "name": direct_name,
-            "udp": True,
-            "mtu": 1400,
-            "remote-dns-resolve": True,
-            "dns": item["proxy"].get("dns") or ["1.1.1.1", "8.8.8.8"],
-        }
-        direct_node.pop("dialer-proxy", None)
-        direct_nodes.append(direct_node)
-
-        # 2. Chained OpenVPN node (with dialer-proxy routed through multi-IP/multi-port WARP pool)
-        chained_name = base_name
-        suffix = 2
-        while chained_name in used_names:
-            chained_name = f"{base_name} ({suffix})"
-            suffix += 1
-        used_names.add(chained_name)
-        chained_node = {
-            **item["proxy"],
-            "name": chained_name,
-            "dialer-proxy": dialer_target,
+            "dialer-proxy": "WARP",
             "udp": True,
             "mtu": min(int(item["proxy"].get("mtu", 1200)), warp_mtu - 80),
             "remote-dns-resolve": True,
             "dns": item["proxy"].get("dns") or ["1.1.1.1", "8.8.8.8"],
         }
-        chained_nodes.append(chained_node)
+        base_name = str(node.get("name") or "VPNGate node")
+        unique_name = base_name
+        suffix = 2
+        while unique_name in used_names:
+            unique_name = f"{base_name} ({suffix})"
+            suffix += 1
+        node["name"] = unique_name
+        used_names.add(unique_name)
+        nodes.append(node)
 
-    if not direct_nodes:
+    if not nodes:
         raise RuntimeError("zero reachable nodes; refusing to publish empty subscription")
 
-    direct_names = [n["name"] for n in direct_nodes]
-    chained_names = [n["name"] for n in chained_nodes]
-
-    proxy_groups = [
-        {
-            "name": "出站节点",
-            "type": "select",
-            "proxies": [
-                "🚀 直连自动优选 (免WARP)",
-                "⚡ 全局自动优选 (最快)",
-                "🛡️ 故障自动转移 (稳定)",
-                "🌐 WARP 优选池",
-                "WARP",
-            ] + direct_names + chained_names,
-        },
-        {
-            "name": "🚀 直连自动优选 (免WARP)",
-            "type": "url-test",
-            "url": "https://cp.cloudflare.com/generate_204",
-            "interval": 90,
-            "tolerance": 50,
-            "lazy": False,
-            "proxies": direct_names,
-        },
-        {
-            "name": "⚡ 全局自动优选 (最快)",
-            "type": "url-test",
-            "url": "https://cp.cloudflare.com/generate_204",
-            "interval": 120,
-            "tolerance": 50,
-            "lazy": False,
-            "proxies": direct_names + warp_names + chained_names,
-        },
-        {
-            "name": "🛡️ 故障自动转移 (稳定)",
-            "type": "fallback",
-            "url": "https://cp.cloudflare.com/generate_204",
-            "interval": 90,
-            "lazy": False,
-            "proxies": direct_names + warp_names + chained_names,
-        },
-        {
-            "name": "🌐 WARP 优选池",
-            "type": "url-test",
-            "url": "https://cp.cloudflare.com/generate_204",
-            "interval": 120,
-            "tolerance": 30,
-            "lazy": False,
-            "proxies": warp_names,
-        },
-    ]
-
+    node_names = [node["name"] for node in nodes]
     document = {
         "ipv6": False,
         "tcp-concurrent": True,
         "unified-delay": True,
-        "geox-url": {
-            "geoip": "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.dat",
-            "geosite": "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat",
-            "mmdb": "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.metadb",
-        },
         "tun": {
-            "enable": True,
-            "stack": "gvisor",
-            "mtu": 1280,
-            "auto-route": True,
-            "auto-detect-interface": True,
-            "dns-hijack": [
-                "any:53",
-                "tcp://any:53",
-            ],
             "route-exclude-address": [
                 "10.0.0.0/8",
                 "127.0.0.0/8",
@@ -896,26 +793,15 @@ def write_yaml(results, path, warp_proxy, warp_config=None, verified_ports=None)
                 "223.5.5.5",
             ],
         },
-        "proxies": warp_proxies + direct_nodes + chained_nodes,
-        "proxy-groups": proxy_groups,
-        "rules": [
-            "DOMAIN-SUFFIX,cn,DIRECT",
-            "DOMAIN-SUFFIX,alimama.com,DIRECT",
-            "DOMAIN-SUFFIX,alipay.com,DIRECT",
-            "DOMAIN-SUFFIX,baidu.com,DIRECT",
-            "DOMAIN-SUFFIX,bilibili.com,DIRECT",
-            "DOMAIN-SUFFIX,huaban.com,DIRECT",
-            "DOMAIN-SUFFIX,jd.com,DIRECT",
-            "DOMAIN-SUFFIX,qq.com,DIRECT",
-            "DOMAIN-SUFFIX,taobao.com,DIRECT",
-            "DOMAIN-SUFFIX,tmall.com,DIRECT",
-            "DOMAIN-SUFFIX,weibo.com,DIRECT",
-            "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve",
-            "IP-CIDR,127.0.0.0/8,DIRECT,no-resolve",
-            "IP-CIDR,172.16.0.0/12,DIRECT,no-resolve",
-            "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve",
-            "MATCH,出站节点",
+        "proxies": [warp_proxy] + nodes,
+        "proxy-groups": [
+            {
+                "name": "出站节点",
+                "type": "select",
+                "proxies": ["WARP"] + node_names,
+            },
         ],
+        "rules": ["MATCH,出站节点"],
     }
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)

@@ -27,6 +27,12 @@ jobs:
         run: pip install -r requirements-subscription.txt
       - name: Unit tests
         run: python -m unittest discover -s tests -v
+      - name: Set up Node for Worker tests
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Test subscription Worker transformation
+        run: node --test tests/test_subscription_worker.mjs
       - name: Set up Go for WARP probe
         if: ${{ !inputs.parse_only }}
         uses: actions/setup-go@v5
@@ -84,14 +90,14 @@ jobs:
           assert proxies and proxies[0].get("name") == "WARP" and proxies[0].get("type") == "wireguard"
           wireguard_nodes = [p for p in proxies if p.get("type") == "wireguard"]
           openvpn = [p for p in proxies if p.get("type") == "openvpn"]
-          assert wireguard_nodes and openvpn
+          assert len(wireguard_nodes) == 1 and wireguard_nodes[0]["name"] == "WARP"
+          assert openvpn and all(p.get("dialer-proxy") == "WARP" for p in openvpn)
           names = {p["name"] for p in proxies}
           groups = {g["name"]: g for g in data.get("proxy-groups", [])}
-          valid_names = names | set(groups)
-          assert all(n in valid_names for group in groups.values() for n in group.get("proxies", []))
-          assert "出站节点" in groups
-          assert data.get("rules", [None])[-1] == "MATCH,出站节点"
-          print(f"Validated {len(wireguard_nodes)} WARP nodes + {len(openvpn)} OpenVPN nodes.")
+          assert list(groups) == ["出站节点"]
+          assert groups["出站节点"].get("proxies") == [p["name"] for p in proxies]
+          assert data.get("rules") == ["MATCH,出站节点"]
+          print(f"Validated one WARP outbound + {len(openvpn)} WARP-chained OpenVPN nodes.")
           PY
       - name: Publish to Cloudflare KV
         if: ${{ success() && !inputs.parse_only }}
