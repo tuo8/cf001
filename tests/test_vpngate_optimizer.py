@@ -143,7 +143,7 @@ KEY
         self.assertEqual(config["reserved"], [211, 165, 3])
         self.assertEqual(module.build_warp_proxy(config)["peers"][0]["reserved"], [211, 165, 3])
 
-    def test_write_yaml_generates_direct_and_chained_nodes_without_dns_deadlock(self):
+    def test_write_yaml_generates_single_warp_chained_selector(self):
         key = base64.b64encode(bytes(range(32))).decode()
         warp_config = module.load_warp_config(__import__("json").dumps({
             "private_key": key, "peer_public_key": key, "ipv4": "172.16.0.2"
@@ -177,19 +177,18 @@ KEY
                 warp_config=warp_config,
                 verified_ports=[2408, 500],
             )
-            group_names = [g["name"] for g in doc["proxy-groups"]]
-            self.assertIn("出站节点", group_names)
-            self.assertIn("⚡ 自动优选 (最快)", group_names)
-            self.assertIn("🛡️ 故障转移 (稳定)", group_names)
-            self.assertIn("🚀 直连节点池 (免WARP)", group_names)
-            self.assertIn("🔗 链式节点池 (过WARP)", group_names)
-            self.assertIn("🌐 WARP 前置池", group_names)
-            openvpn_nodes = [p for p in doc["proxies"] if p["type"] == "openvpn"]
-            self.assertEqual(len(openvpn_nodes), 2)
-            self.assertNotIn("dialer-proxy", openvpn_nodes[0])
-            self.assertEqual(openvpn_nodes[1]["dialer-proxy"], "🌐 WARP 前置池")
-            # Confirm DNS no longer deadlocks on #WARP
+            self.assertEqual([g["name"] for g in doc["proxy-groups"]], ["出站节点"])
+            self.assertEqual(doc["proxies"][0]["name"], "WARP")
+            openvpn_nodes = doc["proxies"][1:]
+            self.assertEqual(len(openvpn_nodes), 1)
+            self.assertEqual(openvpn_nodes[0]["dialer-proxy"], "WARP")
+            self.assertEqual(
+                doc["proxy-groups"][0]["proxies"],
+                ["WARP", openvpn_nodes[0]["name"]],
+            )
+            self.assertEqual(doc["rules"], ["MATCH,出站节点"])
             self.assertFalse(any("#WARP" in ns for ns in doc["dns"]["nameserver"]))
+
 
 
 if __name__ == "__main__":

@@ -746,135 +746,44 @@ def test_many(items, binary, workers, warp_proxy):
 
 
 def write_yaml(results, path, warp_proxy, warp_config=None, verified_ports=None):
-    if warp_config is not None:
-        warp_proxies = build_warp_proxies(warp_config, warp_proxy, verified_ports=verified_ports)
-    else:
-        warp_proxies = [warp_proxy]
+    """Write the Clash Mi profile with one outbound selector and WARP-chained VPN Gate nodes.
 
-    warp_names = [p["name"] for p in warp_proxies]
-    # Route chained OpenVPN nodes through the auto-tested WARP pool ("🌐 WARP 前置池")
-    # instead of a single static WARP node so blocked WARP IPs automatically fail over.
-    dialer_target = os.getenv("VPNGATE_DIALER_PROXY", "🌐 WARP 前置池").strip() or "🌐 WARP 前置池"
-
-    direct_nodes = []
-    chained_nodes = []
-    used_names = set(warp_names)
+    Keep the WARP probe's selected, verified endpoint as the single WARP outbound.
+    Every published OpenVPN node is chained through that outbound, matching the
+    workflow's safety checks and the project's one-selector profile contract.
+    """
+    warp_proxy = {**warp_proxy, "name": "WARP"}
+    nodes = []
+    used_names = {"WARP"}
     warp_mtu = int(warp_proxy.get("mtu", 1280))
 
     for item in results:
-        base_name = str(item["proxy"].get("name") or "VPNGate node")
-
-        # 1. Direct OpenVPN node (connects directly from local network without WARP bottleneck)
-        direct_name = f"⚡直连 {base_name}"
-        suffix = 2
-        while direct_name in used_names:
-            direct_name = f"⚡直连 {base_name} ({suffix})"
-            suffix += 1
-        used_names.add(direct_name)
-        direct_node = {
+        node = {
             **item["proxy"],
-            "name": direct_name,
-            "udp": True,
-            "mtu": 1400,
-            "remote-dns-resolve": True,
-            "dns": ["1.1.1.1", "8.8.8.8"],
-        }
-        direct_node.pop("dialer-proxy", None)
-        direct_nodes.append(direct_node)
-
-        # 2. Chained OpenVPN node (routes through resilient WARP pool to bypass IP blocking)
-        chained_name = base_name
-        suffix = 2
-        while chained_name in used_names:
-            chained_name = f"{base_name} ({suffix})"
-            suffix += 1
-        used_names.add(chained_name)
-        chained_node = {
-            **item["proxy"],
-            "name": chained_name,
-            "dialer-proxy": dialer_target,
+            "dialer-proxy": "WARP",
             "udp": True,
             "mtu": min(int(item["proxy"].get("mtu", 1200)), warp_mtu - 80),
             "remote-dns-resolve": True,
             "dns": item["proxy"].get("dns") or ["1.1.1.1", "8.8.8.8"],
         }
-        chained_nodes.append(chained_node)
+        base_name = str(node.get("name") or "VPNGate node")
+        unique_name = base_name
+        suffix = 2
+        while unique_name in used_names:
+            unique_name = f"{base_name} ({suffix})"
+            suffix += 1
+        node["name"] = unique_name
+        used_names.add(unique_name)
+        nodes.append(node)
 
-    if not chained_nodes:
+    if not nodes:
         raise RuntimeError("zero reachable nodes; refusing to publish empty subscription")
 
-    direct_names = [n["name"] for n in direct_nodes]
-    chained_names = [n["name"] for n in chained_nodes]
-    all_openvpn_names = direct_names + chained_names
-
-    proxy_groups = [
-        {
-            "name": "出站节点",
-            "type": "select",
-            "proxies": [
-                "⚡ 自动优选 (最快)",
-                "🛡️ 故障转移 (稳定)",
-                "🚀 直连节点池 (免WARP)",
-                "🔗 链式节点池 (过WARP)",
-                "🌐 WARP 前置池",
-                "WARP",
-            ] + direct_names + chained_names,
-        },
-        {
-            "name": "⚡ 自动优选 (最快)",
-            "type": "url-test",
-            "url": "https://cp.cloudflare.com/generate_204",
-            "interval": 120,
-            "tolerance": 50,
-            "lazy": False,
-            "proxies": direct_names + warp_names + chained_names,
-        },
-        {
-            "name": "🛡️ 故障转移 (稳定)",
-            "type": "fallback",
-            "url": "https://cp.cloudflare.com/generate_204",
-            "interval": 90,
-            "lazy": False,
-            "proxies": direct_names + warp_names + chained_names,
-        },
-        {
-            "name": "🚀 直连节点池 (免WARP)",
-            "type": "url-test",
-            "url": "https://cp.cloudflare.com/generate_204",
-            "interval": 120,
-            "tolerance": 50,
-            "lazy": False,
-            "proxies": direct_names,
-        },
-        {
-            "name": "🔗 链式节点池 (过WARP)",
-            "type": "url-test",
-            "url": "https://cp.cloudflare.com/generate_204",
-            "interval": 150,
-            "tolerance": 50,
-            "lazy": False,
-            "proxies": chained_names,
-        },
-        {
-            "name": "🌐 WARP 前置池",
-            "type": "url-test",
-            "url": "https://cp.cloudflare.com/generate_204",
-            "interval": 120,
-            "tolerance": 30,
-            "lazy": False,
-            "proxies": warp_names,
-        },
-    ]
-
+    node_names = [node["name"] for node in nodes]
     document = {
         "ipv6": False,
         "tcp-concurrent": True,
         "unified-delay": True,
-        "geox-url": {
-            "geoip": "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.dat",
-            "geosite": "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat",
-            "mmdb": "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.metadb",
-        },
         "tun": {
             "route-exclude-address": [
                 "10.0.0.0/8",
@@ -897,8 +806,6 @@ def write_yaml(results, path, warp_proxy, warp_config=None, verified_ports=None)
                 "ipv6.*",
                 "*.ipv6.*",
             ],
-            # Use fast domestic DNS for bootstrap & local resolution so DNS never deadlocks
-            # when WARP or an OpenVPN tunnel is still handshaking!
             "default-nameserver": ["223.5.5.5", "119.29.29.29", "180.76.76.76"],
             "nameserver": [
                 "https://dns.alidns.com/dns-query",
@@ -911,26 +818,15 @@ def write_yaml(results, path, warp_proxy, warp_config=None, verified_ports=None)
                 "223.5.5.5",
             ],
         },
-        "proxies": warp_proxies + direct_nodes + chained_nodes,
-        "proxy-groups": proxy_groups,
-        "rules": [
-            "DOMAIN-SUFFIX,cn,DIRECT",
-            "DOMAIN-SUFFIX,alimama.com,DIRECT",
-            "DOMAIN-SUFFIX,alipay.com,DIRECT",
-            "DOMAIN-SUFFIX,baidu.com,DIRECT",
-            "DOMAIN-SUFFIX,bilibili.com,DIRECT",
-            "DOMAIN-SUFFIX,huaban.com,DIRECT",
-            "DOMAIN-SUFFIX,jd.com,DIRECT",
-            "DOMAIN-SUFFIX,qq.com,DIRECT",
-            "DOMAIN-SUFFIX,taobao.com,DIRECT",
-            "DOMAIN-SUFFIX,tmall.com,DIRECT",
-            "DOMAIN-SUFFIX,weibo.com,DIRECT",
-            "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve",
-            "IP-CIDR,127.0.0.0/8,DIRECT,no-resolve",
-            "IP-CIDR,172.16.0.0/12,DIRECT,no-resolve",
-            "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve",
-            "MATCH,出站节点",
+        "proxies": [warp_proxy] + nodes,
+        "proxy-groups": [
+            {
+                "name": "出站节点",
+                "type": "select",
+                "proxies": ["WARP"] + node_names,
+            },
         ],
+        "rules": ["MATCH,出站节点"],
     }
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
