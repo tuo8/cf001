@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fetch the latest VPN Gate directory and publish every reachable Mihomo OpenVPN node."""
+"""Fetch the latest VPN Gate directory, filter and rank reachable Mihomo OpenVPN nodes by latency, and publish a high-availability subscription."""
 import argparse
 import base64
 import concurrent.futures
@@ -19,6 +19,10 @@ import requests
 import yaml
 
 API = "https://www.vpngate.net/api/iphone/"
+API_MIRRORS = (
+    "https://www.vpngate.net/api/iphone/",
+    "http://www.vpngate.net/api/iphone/",
+)
 CONNECTIVITY_URLS = (
     "https://cp.cloudflare.com/generate_204",
     "https://www.gstatic.com/generate_204",
@@ -26,6 +30,34 @@ CONNECTIVITY_URLS = (
 # Reserved bytes decoded from the current wgcf registration client_id.
 # Refresh this value if the WARP registration is replaced.
 DEFAULT_WARP_RESERVED = [211, 165, 3]
+
+# Curated Cloudflare WARP Anycast ingress IPs across distinct CIDR blocks
+# to prevent single-endpoint UDP blocking in mainland China networks.
+DEFAULT_WARP_OPTIMAL_ENDPOINTS = (
+    "162.159.192.1",
+    "162.159.193.1",
+    "162.159.195.1",
+    "188.114.96.1",
+    "188.114.97.1",
+    "188.114.98.1",
+)
+
+# AmneziaWG 1.0 compatible pulse obfuscation parameters supported by Mihomo
+# to bypass ISP UDP DPI blocking without triggering Mihomo issue #3033.
+DEFAULT_AMNEZIA_WG_OPTION = {
+    "jc": 4,
+    "jmin": 40,
+    "jmax": 70,
+    "s1": 0,
+    "s2": 0,
+    "h1": 1,
+    "h2": 2,
+    "h3": 3,
+    "h4": 4,
+}
+
+# Preferred low-latency Asia-Pacific regions for domestic connectivity.
+PREFERRED_COUNTRIES = {"JP", "KR", "HK", "TW", "SG", "MY", "TH", "VN"}
 
 
 def load_warp_config(raw=None):
@@ -59,7 +91,8 @@ def load_warp_config(raw=None):
     port_override = os.getenv("VPNGATE_WARP_PORT")
     port = int(port_override) if port_override else int(config.get("port", 2408))
     mtu = int(config.get("mtu", 1280))
-    keepalive = int(config.get("keepalive", 25))
+    # Default keepalive reduced from 25s to 15s to prevent domestic ISP UDP NAT timeout.
+    keepalive = int(config.get("keepalive", 15))
     if not isinstance(endpoint, str) or not endpoint or any(ch.isspace() for ch in endpoint):
         raise ValueError("Invalid WARP endpoint")
     if not 1 <= port <= 65535 or not 576 <= mtu <= 9000 or not 0 <= keepalive <= 65535:
@@ -67,23 +100,40 @@ def load_warp_config(raw=None):
     reserved = config["reserved"] if "reserved" in config else DEFAULT_WARP_RESERVED.copy()
     if reserved is not None and (not isinstance(reserved, list) or len(reserved) != 3 or any(type(v) is not int or not 0 <= v <= 255 for v in reserved)):
         raise ValueError("WARP reserved must be a three-byte integer array")
-    return {"private_key": config["private_key"], "peer_public_key": config["peer_public_key"],
-            "ipv4": str(address.ip), "endpoint": endpoint, "port": port, "mtu": mtu,
-            "keepalive": keepalive, "reserved": reserved}
+
+    enable_awg = os.getenv("VPNGATE_ENABLE_AWG", "1").strip().lower() not in ("0", "false", "no")
+    awg_option = config.get("amnezia_wg_option")
+    if awg_option is None and enable_awg:
+        awg_option = DEFAULT_AMNEZIA_WG_OPTION.copy()
+
+    return {
+        "private_key": config["private_key"],
+        "peer_public_key": config["peer_public_key"],
+        "ipv4": str(address.ip),
+        "endpoint": endpoint,
+        "port": port,
+        "mtu": mtu,
+        "keepalive": keepalive,
+        "reserved": reserved,
+        "amnezia_wg_option": awg_option,
+    }
 
 
-def build_warp_proxy(config):
+def build_warp_proxy(config, name="WARP", endpoint_override=None, port_override=None):
+    """Build a Mihomo WireGuard outbound dictionary with optional AmneziaWG obfuscation."""
+    endpoint = endpoint_override or config["endpoint"]
+    port = int(port_override if port_override is not None else config["port"])
     peer = {
-        "server": config["endpoint"],
-        "port": config["port"],
+        "server": endpoint,
+        "port": port,
         "public-key": config["peer_public_key"],
         "allowed-ips": ["0.0.0.0/0"],
         "persistent-keepalive": config["keepalive"],
     }
     if config.get("reserved") is not None:
         peer["reserved"] = config["reserved"]
-    return {
-        "name": "WARP",
+    proxy = {
+        "name": name,
         "type": "wireguard",
         "private-key": config["private_key"],
         "ip": config["ipv4"],
@@ -94,6 +144,56 @@ def build_warp_proxy(config):
         "dns": ["1.1.1.1", "1.0.0.1"],
         "peers": [peer],
     }
+    awg_option = config.get("amnezia_wg_option")
+    if isinstance(awg_option, dict) and awg_option:
+        proxy["amnezia-wg-option"] = awg_option.copy()
+    return proxy
+
+
+def build_warp_proxies(config, primary_proxy, verified_ports=None):
+    """Build a resilient pool of WARP proxies across multiple Anycast IPs and verified UDP ports."""
+    proxies = [primary_proxy]
+    seen = {(primary_proxy["peers"][0]["server"], int(primary_proxy["peers"][0]["port"]))}
+
+    raw_endpoints = os.getenv("VPNGATE_WARP_ENDPOINTS", "").strip()
+    if raw_endpoints:
+        endpoints = [ep.strip() for ep in raw_endpoints.split(",") if ep.strip()]
+    else:
+        endpoints = list(DEFAULT_WARP_OPTIMAL_ENDPOINTS)
+
+    ports = list(verified_ports) if verified_ports else [int(primary_proxy["peers"][0]["port"]), 2408, 500, 1701, 4500]
+    unique_ports = list(dict.fromkeys(p for p in ports if 1 <= int(p) <= 65535))
+
+    # 1. Add alternate verified ports on the primary endpoint
+    primary_server = primary_proxy["peers"][0]["server"]
+    for alt_port in unique_ports:
+        key = (primary_server, int(alt_port))
+        if key not in seen:
+            seen.add(key)
+            proxies.append(
+                build_warp_proxy(
+                    config,
+                    name=f"WARP-Port-{alt_port}",
+                    endpoint_override=primary_server,
+                    port_override=alt_port,
+                )
+            )
+
+    # 2. Add curated Anycast IPs rotating across verified ports
+    for idx, ep in enumerate(endpoints):
+        chosen_port = unique_ports[idx % len(unique_ports)] if unique_ports else 2408
+        key = (ep, int(chosen_port))
+        if key not in seen:
+            seen.add(key)
+            proxies.append(
+                build_warp_proxy(
+                    config,
+                    name=f"WARP-优选{idx + 1} ({ep}:{chosen_port})",
+                    endpoint_override=ep,
+                    port_override=chosen_port,
+                )
+            )
+    return proxies
 
 
 def warp_port_candidates(config):
@@ -158,8 +258,11 @@ def check_warp_connectivity(proxy_url):
         response = None
         try:
             response = requests.get(
-                url, proxies={"http": proxy_url, "https": proxy_url},
-                timeout=(4, 6), allow_redirects=False, stream=True,
+                url,
+                proxies={"http": proxy_url, "https": proxy_url},
+                timeout=(4, 6),
+                allow_redirects=False,
+                stream=True,
             )
             if response.status_code in (200, 204):
                 return True
@@ -172,12 +275,7 @@ def check_warp_connectivity(proxy_url):
 
 
 def probe_warp(binary, warp_config, diagnostic_root):
-    """Run Mihomo's WARP-only data-plane check on Go-verified ports only.
-
-    The preceding Go probe confirms a nonzero WireGuard last_handshake_time_sec
-    and in-tunnel HTTPS. This second layer confirms Mihomo itself can carry HTTPS
-    through the same WARP profile before VPN Gate nodes are tested.
-    """
+    """Run Mihomo's WARP-only data-plane check on Go-verified ports only."""
     failures = []
     for udp_port in warp_port_candidates(warp_config):
         proxy = build_warp_proxy({**warp_config, "port": udp_port})
@@ -218,6 +316,13 @@ def decode_config(value):
         return base64.b64decode(value + "=" * (-len(value) % 4)).decode("utf-8", "replace")
     except Exception:
         return ""
+
+
+def _safe_int(value, default=0):
+    try:
+        return int(str(value).strip())
+    except (ValueError, TypeError):
+        return default
 
 
 def parse_profile(config, row):
@@ -271,6 +376,7 @@ def parse_profile(config, row):
         return None
 
     country = (row.get("CountryLong") or row.get("CountryShort") or "Unknown").strip()
+    country_short = (row.get("CountryShort") or "").strip().upper()
     ip_text = (row.get("IP") or host).strip()
     # Format node display name as "地区 + IP" (e.g. "Japan 106.168.67.207")
     label = re.sub(r"[^A-Za-z0-9._ -]", "", f"{country} {ip_text}")[:80].strip()
@@ -284,7 +390,7 @@ def parse_profile(config, row):
         "username": "vpn",
         "password": "vpn",
         "ca": blocks["ca"],
-        # Explicit OpenVPN/VPNGate defaults so Mihomo does not fall back to AES-128-GCM / SHA256
+        # Explicit OpenVPN/VPNGate defaults so Mihomo does not fall back to unsupported cipher
         "cipher": "AES-128-CBC",
         "auth": "SHA1",
         # Inner OpenVPN MTU must be smaller than outer WARP MTU (1280) to avoid fragmentation blackholes
@@ -292,9 +398,9 @@ def parse_profile(config, row):
         # Force DNS resolution inside the OpenVPN tunnel (requires non-empty dns list)
         "remote-dns-resolve": True,
         "dns": ["1.1.1.1", "8.8.8.8"],
-        "handshake-timeout": 15,
+        "handshake-timeout": 12,
         "ping": 10,
-        "ping-restart": 60,
+        "ping-restart": 45,
     }
     for key in ("cert", "key", "tls-auth", "tls-crypt", "tls-crypt-v2"):
         if blocks.get(key):
@@ -310,28 +416,36 @@ def parse_profile(config, row):
     if data_ciphers:
         parsed_ciphers = [
             item.upper()
-            for item in re.split(r"[:, \s]+", " ".join(data_ciphers[0]))
+            for item in re.split(r"[:,\s]+", " ".join(data_ciphers[0]))
             if item
         ]
-        for fallback_cipher in (node["cipher"], "AES-256-GCM", "AES-128-GCM", "AES-128-CBC"):
+        for fallback_cipher in ("AES-128-GCM", "AES-256-GCM", "CHACHA20-POLY1305", node["cipher"], "AES-128-CBC"):
             if fallback_cipher and fallback_cipher not in parsed_ciphers:
                 parsed_ciphers.append(fallback_cipher)
         node["data-ciphers"] = parsed_ciphers
+    else:
+        node["data-ciphers"] = ["AES-128-GCM", "AES-256-GCM", "CHACHA20-POLY1305", node["cipher"]]
     node.setdefault("data-ciphers-fallback", node["cipher"])
 
     compression = occurrences("comp-lzo")
     if compression:
-        # OpenVPN accepts both "comp-lzo" and "comp-lzo yes".
         node["comp-lzo"] = compression[0][0].lower() if compression[0] else "yes"
     elif values("compress"):
         node["comp-lzo"] = "yes"
 
-    # Mihomo's OpenVPN outbound has no tls-cipher equivalent. Make this
-    # compatibility limitation visible instead of silently dropping it.
     if values("tls-cipher"):
         print(f"兼容性警告 {label}: profile contains tls-cipher; Mihomo outbound cannot map it")
 
-    return {"proxy": node, "country": country}
+    result = {"proxy": node, "country": country}
+    if country_short:
+        result["country_short"] = country_short
+    if row.get("Speed") is not None:
+        result["speed_bps"] = _safe_int(row.get("Speed"), 0)
+    if row.get("Ping") is not None:
+        result["ping_ms"] = _safe_int(row.get("Ping"), 999)
+    if row.get("Score") is not None:
+        result["score"] = _safe_int(row.get("Score"), 0)
+    return result
 
 
 def parse_csv(text):
@@ -359,15 +473,58 @@ def parse_csv(text):
     return output
 
 
+def filter_candidates(items):
+    """Pre-filter and prioritize candidates by region, bandwidth, UDP preference, and ping."""
+    if not items:
+        return []
+    min_speed = int(os.getenv("VPNGATE_MIN_SPEED_BPS", "10000000"))  # Default 10 Mbps
+    max_ping = int(os.getenv("VPNGATE_MAX_PING_MS", "200"))          # Default 200 ms
+    max_candidates = int(os.getenv("VPNGATE_MAX_CANDIDATES", "45"))  # Probe top 45 candidates
+
+    filtered = [
+        item for item in items
+        if item.get("speed_bps", min_speed) >= min_speed
+        and (0 <= item.get("ping_ms", 50) <= max_ping or item.get("ping_ms", 0) == 0)
+    ]
+    # Fallback to all items if strict threshold filtered out too many nodes
+    if len(filtered) < min(8, len(items)):
+        filtered = list(items)
+
+    def candidate_sort_key(item):
+        is_preferred_region = 0 if item.get("country_short") in PREFERRED_COUNTRIES else 1
+        is_udp = 0 if item["proxy"].get("proto") == "udp" else 1
+        ping_val = item.get("ping_ms", 500)
+        if ping_val <= 0:
+            ping_val = 500
+        speed_val = item.get("speed_bps", 0)
+        score_val = item.get("score", 0)
+        return (is_preferred_region, is_udp, ping_val, -speed_val, -score_val)
+
+    enable_pre_sort = os.getenv("VPNGATE_PRE_SORT", "1").strip().lower() not in ("0", "false", "no")
+    if enable_pre_sort:
+        filtered.sort(key=candidate_sort_key)
+
+    if max_candidates > 0:
+        return filtered[:max_candidates]
+    return filtered
+
+
 def fetch():
-    response = requests.get(
-        API,
-        timeout=40,
-        headers={"User-Agent": "cf001-vpngate/1.0", "Cache-Control": "no-cache"},
-    )
-    response.raise_for_status()
-    response.encoding = "utf-8"
-    return parse_csv(response.text)
+    last_error = None
+    for url in API_MIRRORS:
+        try:
+            response = requests.get(
+                url,
+                timeout=35,
+                headers={"User-Agent": "cf001-vpngate/2.0", "Cache-Control": "no-cache"},
+            )
+            response.raise_for_status()
+            response.encoding = "utf-8"
+            return parse_csv(response.text)
+        except Exception as error:
+            last_error = error
+            print(f"Fetch mirror {url} failed: {type(error).__name__}: {error}")
+    raise last_error
 
 
 def free_port():
@@ -389,8 +546,6 @@ def start_node(node, binary, folder, warp_proxy):
     chained_node = {
         **node,
         "dialer-proxy": "WARP",
-        # OpenVPN dev tun is a Layer-3 IP tunnel; inner UDP (DNS/53, etc.) must be enabled
-        # even when the outer OpenVPN transport protocol (proto) is TCP.
         "udp": True,
         "mtu": min(int(node.get("mtu", 1200)), int(warp_proxy.get("mtu", 1280)) - 80),
         "remote-dns-resolve": True,
@@ -399,7 +554,7 @@ def start_node(node, binary, folder, warp_proxy):
     config = {
         "mixed-port": port,
         "mode": "rule",
-        "log-level": "debug",
+        "log-level": "warning",
         "ipv6": False,
         "dns": {
             "enable": True,
@@ -424,7 +579,7 @@ def start_node(node, binary, folder, warp_proxy):
         stdout=log,
         stderr=subprocess.STDOUT,
     )
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + 8
     while time.monotonic() < deadline:
         if process.poll() is not None:
             log.flush()
@@ -434,7 +589,7 @@ def start_node(node, binary, folder, warp_proxy):
             with socket.create_connection(("127.0.0.1", port), timeout=0.2):
                 return process, log, port
         except OSError:
-            time.sleep(0.1)
+            time.sleep(0.08)
     process.terminate()
     try:
         process.wait(timeout=2)
@@ -457,29 +612,40 @@ def stop_node(process, log):
     log.close()
 
 
-def check_connectivity(proxy_url):
-    """Confirm traffic passes through the selected VPN; do not measure speed or latency."""
+def measure_connectivity(proxy_url):
+    """Measure real HTTPS round-trip latency (ms) through the chained VPN tunnel."""
+    best_latency_ms = None
     for attempt in range(2):
         for url in CONNECTIVITY_URLS:
             response = None
+            start_ts = time.monotonic()
             try:
                 response = requests.get(
                     url,
                     proxies={"http": proxy_url, "https": proxy_url},
-                    timeout=(10, 10),
+                    timeout=(5, 6),
                     allow_redirects=True,
                     stream=True,
                 )
+                elapsed_ms = int((time.monotonic() - start_ts) * 1000)
                 if response.status_code in (200, 204, 301, 302):
-                    return True
+                    if best_latency_ms is None or elapsed_ms < best_latency_ms:
+                        best_latency_ms = elapsed_ms
+                    return True, best_latency_ms
             except requests.RequestException:
                 pass
             finally:
                 if response is not None:
                     response.close()
         if attempt < 1:
-            time.sleep(1)
-    return False
+            time.sleep(0.5)
+    return False, None
+
+
+def check_connectivity(proxy_url):
+    """Backwards-compatible boolean connectivity check."""
+    ok, _ = measure_connectivity(proxy_url)
+    return ok
 
 
 def probe(item, binary, folder, warp_proxy):
@@ -488,10 +654,13 @@ def probe(item, binary, folder, warp_proxy):
     try:
         process, log, port = start_node(item["proxy"], binary, folder, warp_proxy)
         proxy_url = f"http://127.0.0.1:{port}"
-        if not check_connectivity(proxy_url):
+        ok, latency_ms = measure_connectivity(proxy_url)
+        if not ok:
             error_message = "HTTP connectivity probes failed for both configured endpoints"
             return False
-        print(f"连通性通过: {item['country']} | {item['proxy']['name']}")
+        if latency_ms is not None:
+            item["latency_ms"] = latency_ms
+        print(f"连通性通过: {item.get('country', 'Unknown')} | {item['proxy']['name']} ({item.get('latency_ms', 0)}ms)")
         return True
     except Exception as error:
         error_message = f"{type(error).__name__}: {error}"
@@ -513,7 +682,8 @@ def probe(item, binary, folder, warp_proxy):
 
 
 def _run_probes(items, binary, workers, diagnostic_root, warp_proxy):
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(workers, 5))) as pool:
+    max_pool = max(1, min(int(workers), 12))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_pool) as pool:
         jobs = {
             pool.submit(probe, item, binary, diagnostic_root / str(index), warp_proxy): (index, item)
             for index, item in enumerate(items)
@@ -524,10 +694,23 @@ def _run_probes(items, binary, workers, diagnostic_root, warp_proxy):
             try:
                 if future.result():
                     passed_by_index[index] = item
-                    print(f"连通性通过: {item['country']} | {item['proxy']['name']}")
             except Exception as error:
                 print(f"probe error {item['proxy']['name']}: {type(error).__name__}: {error}")
-        return [passed_by_index[index] for index in sorted(passed_by_index)]
+
+        ordered = [passed_by_index[index] for index in sorted(passed_by_index)]
+        # Sort by measured latency_ms when present so fastest nodes appear first
+        if any("latency_ms" in item for item in ordered):
+            ordered.sort(
+                key=lambda x: (
+                    x.get("latency_ms", 99999),
+                    0 if x.get("country_short") in PREFERRED_COUNTRIES else 1,
+                    -x.get("speed_bps", 0),
+                )
+            )
+        max_output = int(os.getenv("VPNGATE_MAX_OUTPUT_NODES", "25"))
+        if max_output > 0 and len(ordered) > max_output:
+            ordered = ordered[:max_output]
+        return ordered
 
 
 def test_many(items, binary, workers, warp_proxy):
@@ -542,16 +725,22 @@ def test_many(items, binary, workers, warp_proxy):
         return _run_probes(items, binary, workers, Path(temporary), warp_proxy)
 
 
-def write_yaml(results, path, warp_proxy):
+def write_yaml(results, path, warp_proxy, warp_config=None, verified_ports=None):
+    if warp_config is not None:
+        warp_proxies = build_warp_proxies(warp_config, warp_proxy, verified_ports=verified_ports)
+    else:
+        warp_proxies = [warp_proxy]
+
+    warp_names = [p["name"] for p in warp_proxies]
+    dialer_target = os.getenv("VPNGATE_DIALER_PROXY", "WARP").strip() or "WARP"
+
     nodes = []
-    used_names = set()
+    used_names = set(warp_names)
     warp_mtu = int(warp_proxy.get("mtu", 1280))
     for item in results:
         node = {
             **item["proxy"],
-            "dialer-proxy": "WARP",
-            # Enable inner UDP relay across all OpenVPN TUN nodes (including proto: tcp)
-            # so UDP DNS (port 53) and UDP apps do not fail when a TCP OpenVPN node is selected.
+            "dialer-proxy": dialer_target,
             "udp": True,
             "mtu": min(int(item["proxy"].get("mtu", 1200)), warp_mtu - 80),
             "remote-dns-resolve": True,
@@ -560,7 +749,7 @@ def write_yaml(results, path, warp_proxy):
         base_name = str(node.get("name") or "VPNGate node")
         unique_name = base_name
         suffix = 2
-        while unique_name in used_names or unique_name == "WARP":
+        while unique_name in used_names:
             unique_name = f"{base_name} ({suffix})"
             suffix += 1
         node["name"] = unique_name
@@ -568,6 +757,47 @@ def write_yaml(results, path, warp_proxy):
         nodes.append(node)
     if not nodes:
         raise RuntimeError("zero reachable nodes; refusing to publish empty subscription")
+
+    openvpn_names = [node["name"] for node in nodes]
+    proxy_groups = [
+        {
+            "name": "出站节点",
+            "type": "select",
+            "proxies": [
+                "⚡ 自动优选 (最快)",
+                "🛡️ 故障转移 (稳定)",
+                "🌐 WARP 前置池",
+                "WARP",
+            ] + openvpn_names,
+        },
+        {
+            "name": "⚡ 自动优选 (最快)",
+            "type": "url-test",
+            "url": "https://cp.cloudflare.com/generate_204",
+            "interval": 180,
+            "tolerance": 50,
+            "lazy": False,
+            "proxies": openvpn_names + ["WARP"],
+        },
+        {
+            "name": "🛡️ 故障转移 (稳定)",
+            "type": "fallback",
+            "url": "https://cp.cloudflare.com/generate_204",
+            "interval": 120,
+            "lazy": False,
+            "proxies": openvpn_names + warp_names,
+        },
+        {
+            "name": "🌐 WARP 前置池",
+            "type": "url-test",
+            "url": "https://cp.cloudflare.com/generate_204",
+            "interval": 180,
+            "tolerance": 30,
+            "lazy": False,
+            "proxies": warp_names,
+        },
+    ]
+
     document = {
         "ipv6": False,
         "tun": {
@@ -590,21 +820,15 @@ def write_yaml(results, path, warp_proxy):
                 "ipv6.*",
                 "*.ipv6.*",
             ],
-            "default-nameserver": ["1.1.1.1", "8.8.8.8"],
-            # Route Mihomo's upstream DNS queries through #WARP rather than GLOBAL/VPNGate
-            # so DNS resolution never deadlocks while a VPNGate OpenVPN node is handshaking.
+            "default-nameserver": ["1.1.1.1", "8.8.8.8", "223.5.5.5"],
             "nameserver": [
                 "https://1.1.1.1/dns-query#WARP",
                 "https://8.8.8.8/dns-query#WARP",
             ],
-            "proxy-server-nameserver": ["1.1.1.1", "8.8.8.8"],
+            "proxy-server-nameserver": ["223.5.5.5", "119.29.29.29", "1.1.1.1"],
         },
-        "proxies": [warp_proxy] + nodes,
-        "proxy-groups": [
-            # One manual picker: WARP is first (and therefore the safe default);
-            # every OpenVPN node remains chained through WARP via dialer-proxy.
-            {"name": "出站节点", "type": "select", "proxies": ["WARP"] + [node["name"] for node in nodes]},
-        ],
+        "proxies": warp_proxies + nodes,
+        "proxy-groups": proxy_groups,
         "rules": ["MATCH,出站节点"],
     }
     output_path = Path(path)
@@ -622,23 +846,24 @@ def main():
     parser.add_argument(
         "--workers",
         type=int,
-        default=int(os.getenv("VPNGATE_PROBE_WORKERS", "3")),
+        default=int(os.getenv("VPNGATE_PROBE_WORKERS", "8")),
     )
     parser.add_argument("--parse-only", action="store_true")
     args = parser.parse_args()
 
     try:
         latest_nodes = fetch()
-        candidates = list(latest_nodes)
+        candidates = filter_candidates(latest_nodes)
         print(
             f"Latest VPN Gate snapshot: parsed={len(latest_nodes)}; "
-            f"connectivity candidates={len(candidates)} (all valid nodes)"
+            f"filtered candidates={len(candidates)} (prioritized by region, speed & ping)"
         )
         if args.parse_only:
             print("Parse-only: no connectivity checks, YAML output, or publishing.")
             return 0
 
         warp_config = load_warp_config()
+        verified_ports = warp_port_candidates(warp_config)
 
         binary = shutil.which(os.getenv("MIHOMO_PATH", "mihomo"))
         if not binary:
@@ -658,11 +883,16 @@ def main():
 
         print(
             f"Go WireGuard handshake + HTTPS and Mihomo WARP-only validation passed on UDP port {warp_proxy['peers'][0]['port']}; "
-            "testing VPN Gate nodes through WARP."
+            "tested and ranked VPN Gate nodes through WARP."
         )
-        # _run_probes preserves the original VPN Gate API order.
-        document = write_yaml(reachable, args.output, warp_proxy)
-        print(f"Connectivity passed={len(reachable)}; published nodes={len(document['proxies']) - 1}")
+        document = write_yaml(
+            reachable,
+            args.output,
+            warp_proxy,
+            warp_config=warp_config,
+            verified_ports=verified_ports,
+        )
+        print(f"Connectivity passed={len(reachable)}; total published proxies={len(document['proxies'])}")
         return 0
     except Exception as error:
         print(f"VPN Gate task failed: {type(error).__name__}: {str(error)[:160]}")

@@ -10,9 +10,10 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/netip"
 	"net/http"
+	"net/netip"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,6 +26,13 @@ import (
 
 var defaultReserved = [3]byte{211, 165, 3}
 var candidatePorts = []int{2408, 500, 1701, 4500}
+var fallbackEndpoints = []string{
+	"engage.cloudflareclient.com",
+	"162.159.192.1",
+	"162.159.193.1",
+	"162.159.195.1",
+	"188.114.96.1",
+}
 
 type warpConfig struct {
 	privateKey    []byte
@@ -100,7 +108,7 @@ func parseConfig(raw string) (warpConfig, error) {
 	}
 	keepalive := intField(input, "keepalive")
 	if keepalive == 0 {
-		keepalive = 25
+		keepalive = 15
 	}
 	if keepalive < 0 || keepalive > 65535 {
 		return warpConfig{}, errors.New("WARP keepalive is outside 0..65535")
@@ -141,6 +149,18 @@ func portCandidates(config warpConfig) []int {
 		}
 	}
 	return ports
+}
+
+func endpointCandidates(config warpConfig) []string {
+	seen := make(map[string]bool)
+	endpoints := make([]string, 0, len(fallbackEndpoints)+1)
+	for _, ep := range append([]string{config.endpoint}, fallbackEndpoints...) {
+		if ep != "" && !seen[ep] {
+			seen[ep] = true
+			endpoints = append(endpoints, ep)
+		}
+	}
+	return endpoints
 }
 
 type wgEndpoint struct {
@@ -305,31 +325,49 @@ func waitHandshake(ctx context.Context, wg *device.Device) (int64, error) {
 			return 0, fmt.Errorf("WireGuard handshake was not confirmed before timeout: %w", ctx.Err())
 		case <-timer.C:
 		}
-		if delay < 50*time.Millisecond {
+		if delay < 40*time.Millisecond {
 			delay *= 2
-			if delay > 50*time.Millisecond {
-				delay = 50 * time.Millisecond
+			if delay > 40*time.Millisecond {
+				delay = 40 * time.Millisecond
 			}
 		}
 	}
 }
 
 type probeResult struct {
+	endpoint  string
 	port      int
 	handshake int64
 	url       string
 	status    int
 	txBytes   uint64
 	rxBytes   uint64
+	elapsedMs int64
 }
 
 func probePort(config warpConfig, port int) (probeResult, error) {
-	outer, err := net.ResolveUDPAddr("udp", net.JoinHostPort(config.endpoint, strconv.Itoa(port)))
-	if err != nil {
-		return probeResult{}, fmt.Errorf("resolve WARP endpoint: %w", err)
+	startTs := time.Now()
+	var outerAddr netip.AddrPort
+	var chosenEndpoint string
+	var resolveErr error
+
+	for _, ep := range endpointCandidates(config) {
+		outer, err := net.ResolveUDPAddr("udp", net.JoinHostPort(ep, strconv.Itoa(port)))
+		if err != nil {
+			resolveErr = err
+			continue
+		}
+		candidateAddr := outer.AddrPort()
+		if candidateAddr.IsValid() {
+			outerAddr = candidateAddr
+			chosenEndpoint = ep
+			break
+		}
 	}
-	outerAddr := outer.AddrPort()
 	if !outerAddr.IsValid() {
+		if resolveErr != nil {
+			return probeResult{}, fmt.Errorf("resolve WARP endpoint: %w", resolveErr)
+		}
 		return probeResult{}, errors.New("WARP endpoint did not resolve to a valid UDP address")
 	}
 
@@ -360,7 +398,7 @@ func probePort(config warpConfig, port int) (probeResult, error) {
 		return probeResult{}, fmt.Errorf("start WireGuard device: %w", err)
 	}
 
-	handshakeCtx, cancelHandshake := context.WithTimeout(context.Background(), 8*time.Second)
+	handshakeCtx, cancelHandshake := context.WithTimeout(context.Background(), 6*time.Second)
 	handshake, err := waitHandshake(handshakeCtx, wg)
 	cancelHandshake()
 	if err != nil {
@@ -376,15 +414,20 @@ func probePort(config warpConfig, port int) (probeResult, error) {
 		return probeResult{}, fmt.Errorf("read WireGuard transfer counters: %w", err)
 	}
 	return probeResult{
-		port: port, handshake: handshake, url: url, status: status,
-		txBytes: parseCounter(finalStatus, "tx_bytes"),
-		rxBytes: parseCounter(finalStatus, "rx_bytes"),
+		endpoint:  chosenEndpoint,
+		port:      port,
+		handshake: handshake,
+		url:       url,
+		status:    status,
+		txBytes:   parseCounter(finalStatus, "tx_bytes"),
+		rxBytes:   parseCounter(finalStatus, "rx_bytes"),
+		elapsedMs: time.Since(startTs).Milliseconds(),
 	}, nil
 }
 
 func checkHTTPS(tunnelNet *netstack.Net) (string, int, error) {
 	transport := &http.Transport{
-		DisableKeepAlives: true,
+		DisableKeepAlives: false,
 		TLSClientConfig:   &tls.Config{MinVersion: tls.VersionTLS12},
 		DialContext: func(ctx context.Context, _, address string) (net.Conn, error) {
 			return tunnelNet.DialContext(ctx, "tcp", address)
@@ -393,7 +436,7 @@ func checkHTTPS(tunnelNet *netstack.Net) (string, int, error) {
 	defer transport.CloseIdleConnections()
 	client := &http.Client{
 		Transport: transport,
-		Timeout:   7 * time.Second,
+		Timeout:   6 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
@@ -409,17 +452,17 @@ func checkHTTPS(tunnelNet *netstack.Net) (string, int, error) {
 			lastErr = err
 			continue
 		}
-		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
-		_ = response.Body.Close()
+		io.Copy(io.Discard, response.Body)
+		response.Body.Close()
 		if response.StatusCode == http.StatusOK || response.StatusCode == http.StatusNoContent {
 			return target, response.StatusCode, nil
 		}
 		lastErr = fmt.Errorf("%s returned HTTP %d", target, response.StatusCode)
 	}
-	if lastErr == nil {
-		lastErr = errors.New("no HTTPS connectivity endpoint was tested")
+	if lastErr != nil {
+		return "", 0, lastErr
 	}
-	return "", 0, lastErr
+	return "", 0, errors.New("HTTPS probes failed")
 }
 
 func writeGitHubOutput(ports []int) error {
@@ -460,26 +503,35 @@ func run() error {
 		config.port = port
 	}
 
-	verified := make([]int, 0, len(candidatePorts))
-	for _, port := range portCandidates(config) {
+	candidates := portCandidates(config)
+	results := make([]probeResult, 0, len(candidates))
+	for _, port := range candidates {
 		result, probeErr := probePort(config, port)
 		if probeErr != nil {
 			fmt.Printf("WARP probe FAIL: UDP port %d: %v\n", port, probeErr)
 			continue
 		}
-		verified = append(verified, port)
+		results = append(results, result)
 		fmt.Printf(
-			"WARP handshake PASS: UDP port %d; last_handshake_time_sec=%d; tx_bytes=%d; rx_bytes=%d\n",
-			result.port, result.handshake, result.txBytes, result.rxBytes,
+			"WARP handshake PASS: endpoint=%s UDP port %d (%dms); last_handshake_time_sec=%d; tx_bytes=%d; rx_bytes=%d\n",
+			result.endpoint, result.port, result.elapsedMs, result.handshake, result.txBytes, result.rxBytes,
 		)
 		fmt.Printf("WARP HTTPS data-plane PASS: %s returned HTTP %d\n", result.url, result.status)
 	}
-	if len(verified) == 0 {
+	if len(results) == 0 {
 		return errors.New("no candidate UDP port passed both WireGuard handshake and in-tunnel HTTPS; refusing VPN Gate checks and publication")
 	}
-	values := make([]string, 0, len(verified))
-	for _, port := range verified {
-		values = append(values, strconv.Itoa(port))
+
+	// Sort verified ports by probe round-trip time so fastest UDP port is preferred first
+	sort.SliceStable(results, func(i, j int) bool {
+		return results[i].elapsedMs < results[j].elapsedMs
+	})
+
+	verified := make([]int, 0, len(results))
+	values := make([]string, 0, len(results))
+	for _, res := range results {
+		verified = append(verified, res.port)
+		values = append(values, strconv.Itoa(res.port))
 	}
 	fmt.Printf("WARP_PROBE_VERIFIED_PORTS=%s\n", strings.Join(values, ","))
 	return writeGitHubOutput(verified)

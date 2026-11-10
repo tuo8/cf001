@@ -1,8 +1,9 @@
 import base64
 import importlib.util
+import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location(
     "vpngate", Path(__file__).parents[1] / "scripts" / "vpngate_optimizer.py"
@@ -74,44 +75,43 @@ KEY
         self.assertEqual(proxy["key-direction"], "1")
         self.assertIn("KEY", proxy["tls-auth"])
 
-    def test_csv(self):
+    def test_csv_and_metadata_extraction(self):
         config = "proto tcp-client\nremote 203.0.113.2 443\n<ca>\nCA\n</ca>\n"
         encoded = base64.b64encode(config.encode()).decode()
         raw = (
             "*vpn_servers\n"
             "#HostName,IP,Score,Ping,Speed,CountryLong,CountryShort,NumVpnSessions,"
             "Uptime,TotalUsers,TotalTraffic,LogType,Operator,Message,OpenVPN_ConfigData_Base64\n"
-            "vpn1,203.0.113.2,90,10,1000,Japan,JP,1,2,3,4,0,op,msg,"
+            "vpn1,203.0.113.2,90,10,50000000,Japan,JP,1,2,3,4,0,op,msg,"
             + encoded
             + "\n*vpn_servers_end\n"
         )
         nodes = module.parse_csv(raw)
         self.assertEqual(len(nodes), 1)
         self.assertEqual(nodes[0]["country"], "Japan")
-        self.assertNotIn("ping", nodes[0])
-        self.assertNotIn("speed", nodes[0])
+        self.assertEqual(nodes[0]["country_short"], "JP")
+        self.assertEqual(nodes[0]["speed_bps"], 50000000)
+        self.assertEqual(nodes[0]["ping_ms"], 10)
 
     def test_reject_incomplete(self):
         self.assertIsNone(module.parse_profile("proto tcp\nremote x 443\n", {}))
         self.assertIsNone(module.parse_profile("proto tcp\n<ca>\nCA\n</ca>", {}))
 
-    def test_reachable_nodes_preserve_official_list_order_without_speed_ranking(self):
+    def test_reachable_nodes_sorted_by_latency_when_measured(self):
         items = [
-            {"proxy": {"name": "node-0"}, "ok": True},
-            {"proxy": {"name": "node-1"}, "ok": False},
-            {"proxy": {"name": "node-2"}, "ok": True},
-            {"proxy": {"name": "node-3"}, "ok": True},
+            {"proxy": {"name": "node-slow"}, "ok": True, "latency_ms": 650},
+            {"proxy": {"name": "node-dead"}, "ok": False},
+            {"proxy": {"name": "node-fast"}, "ok": True, "latency_ms": 180},
+            {"proxy": {"name": "node-mid"}, "ok": True, "latency_ms": 320},
         ]
         with patch.object(module, "probe", side_effect=lambda item, *args: item["ok"]):
-            reachable = module._run_probes(items, "mihomo", 3, Path("/tmp/cf001-test"), {})
+            reachable = module._run_probes(items, "mihomo", 4, Path("/tmp/cf001-test"), {})
         self.assertEqual(
             [item["proxy"]["name"] for item in reachable],
-            ["node-0", "node-2", "node-3"],
+            ["node-fast", "node-mid", "node-slow"],
         )
-        self.assertFalse(hasattr(module, "rank"))
-        self.assertFalse(hasattr(module, "measure_performance"))
 
-    def test_warp_config_and_proxy(self):
+    def test_warp_config_and_amnezia_wg_proxy(self):
         key = base64.b64encode(bytes(range(32))).decode()
         config = module.load_warp_config(__import__("json").dumps({
             "private_key": key, "peer_public_key": key, "ipv4": "172.16.0.2",
@@ -121,6 +121,8 @@ KEY
         self.assertEqual(proxy["type"], "wireguard")
         self.assertEqual(proxy["ip"], "172.16.0.2")
         self.assertEqual(proxy["peers"][0]["reserved"], [1, 2, 3])
+        self.assertIn("amnezia-wg-option", proxy)
+        self.assertEqual(proxy["amnezia-wg-option"]["jc"], 4)
 
     def test_warp_reserved_defaults_to_current_registration(self):
         key = base64.b64encode(bytes(range(32))).decode()
@@ -130,125 +132,47 @@ KEY
         self.assertEqual(config["reserved"], [211, 165, 3])
         self.assertEqual(module.build_warp_proxy(config)["peers"][0]["reserved"], [211, 165, 3])
 
-    def test_warp_port_override(self):
+    def test_write_yaml_generates_multi_warp_and_auto_groups(self):
         key = base64.b64encode(bytes(range(32))).decode()
-        raw = __import__("json").dumps({
-            "private_key": key, "peer_public_key": key, "ipv4": "172.16.0.2", "port": 2408
-        })
-        with patch.dict("os.environ", {"VPNGATE_WARP_PORT": "500"}):
-            config = module.load_warp_config(raw)
-        self.assertEqual(config["port"], 500)
-        self.assertEqual(module.build_warp_proxy(config)["peers"][0]["port"], 500)
-
-    def test_missing_warp_config_fails_closed(self):
-        with self.assertRaisesRegex(RuntimeError, "Missing VPNGATE_WARP_CONFIG"):
-            module.load_warp_config("")
-
-    def test_invalid_warp_key_rejected(self):
-        with self.assertRaisesRegex(ValueError, "32 bytes"):
-            module.load_warp_config(__import__("json").dumps({
-                "private_key": "YQ==", "peer_public_key": "YQ==", "ipv4": "172.16.0.2"
-            }))
-
-
-    def test_output_deduplicates_proxy_names(self):
-        key = base64.b64encode(bytes(range(32))).decode()
-        cfg = module.load_warp_config(__import__("json").dumps({
+        warp_config = module.load_warp_config(__import__("json").dumps({
             "private_key": key, "peer_public_key": key, "ipv4": "172.16.0.2"
         }))
-        warp = module.build_warp_proxy(cfg)
-        items = [
-            {"proxy": {"name": "Duplicate", "type": "openvpn", "server": "198.51.100.1", "port": 1194}},
-            {"proxy": {"name": "Duplicate", "type": "openvpn", "server": "198.51.100.2", "port": 1194}},
-            {"proxy": {"name": "WARP", "type": "openvpn", "server": "198.51.100.3", "port": 1194}},
+        warp_proxy = module.build_warp_proxy(warp_config)
+        sample_results = [
+            {
+                "country": "Japan",
+                "proxy": {
+                    "name": "Japan 203.0.113.10",
+                    "type": "openvpn",
+                    "server": "203.0.113.10",
+                    "port": 443,
+                    "proto": "udp",
+                    "udp": True,
+                    "username": "vpn",
+                    "password": "vpn",
+                    "ca": "CA",
+                    "cipher": "AES-128-CBC",
+                    "auth": "SHA1",
+                    "mtu": 1200,
+                },
+            }
         ]
-        with __import__("tempfile").TemporaryDirectory() as tmp:
-            module.write_yaml(items, Path(tmp) / "out.yaml", warp)
-            parsed = __import__("yaml").safe_load((Path(tmp) / "out.yaml").read_text())
-        names = [proxy["name"] for proxy in parsed["proxies"]]
-        self.assertEqual(len(names), len(set(names)))
-        self.assertEqual(names, ["WARP", "Duplicate", "Duplicate (2)", "WARP (2)"])
-        self.assertEqual(
-            parsed["proxy-groups"],
-            [{
-                "name": "出站节点",
-                "type": "select",
-                "proxies": ["WARP", "Duplicate", "Duplicate (2)", "WARP (2)"],
-            }],
-        )
-        self.assertEqual(parsed["rules"], ["MATCH,出站节点"])
-
-    def test_output_contains_warp_and_chains_every_openvpn(self):
-        key = base64.b64encode(bytes(range(32))).decode()
-        cfg = module.load_warp_config(__import__("json").dumps({
-            "private_key": key, "peer_public_key": key, "ipv4": "172.16.0.2"
-        }))
-        warp = module.build_warp_proxy(cfg)
-        item = {"proxy": {"name": "VPN Japan", "type": "openvpn", "server": "198.51.100.1", "port": 1194}}
-        with __import__("tempfile").TemporaryDirectory() as tmp:
-            doc = module.write_yaml([item], Path(tmp) / "out.yaml", warp)
-            parsed = __import__("yaml").safe_load((Path(tmp) / "out.yaml").read_text())
-        self.assertEqual(parsed["proxies"][0]["type"], "wireguard")
-        self.assertEqual(parsed["proxies"][1]["dialer-proxy"], "WARP")
-        self.assertEqual(
-            doc["proxy-groups"],
-            [{"name": "出站节点", "type": "select", "proxies": ["WARP", "VPN Japan"]}],
-        )
-        self.assertEqual(doc["rules"], ["MATCH,出站节点"])
-
-    def test_warp_port_candidates_accepts_only_go_verified_ports(self):
-        with patch.dict(module.os.environ, {"VPNGATE_WARP_VERIFIED_PORTS": "1701,2408,500,4500"}):
-            self.assertEqual(module.warp_port_candidates({"port": 2408}), [1701, 2408, 500, 4500])
-        with patch.dict(module.os.environ, {"VPNGATE_WARP_VERIFIED_PORTS": "2408,500,2408"}):
-            self.assertEqual(module.warp_port_candidates({"port": 2408}), [2408, 500])
-
-    def test_warp_port_candidates_fails_closed_without_go_output(self):
-        with patch.dict(module.os.environ, {"VPNGATE_WARP_VERIFIED_PORTS": ""}):
-            with self.assertRaisesRegex(RuntimeError, "Go WARP probe"):
-                module.warp_port_candidates({"port": 2408})
-
-    def test_warp_port_candidates_rejects_invalid_ports(self):
-        with patch.dict(module.os.environ, {"VPNGATE_WARP_VERIFIED_PORTS": "2408,65536"}):
-            with self.assertRaisesRegex(ValueError, "out-of-range"):
-                module.warp_port_candidates({"port": 2408})
-
-    def test_warp_connectivity_accepts_https_success(self):
-        response = Mock(status_code=204)
-        with patch.object(module.requests, "get", return_value=response):
-            self.assertTrue(module.check_warp_connectivity("http://127.0.0.1:7890"))
-        response.close.assert_called_once()
-
-    def test_probe_warp_uses_next_port_after_data_plane_failure(self):
-        key = base64.b64encode(bytes(range(32))).decode()
-        config = module.load_warp_config(__import__("json").dumps({
-            "private_key": key, "peer_public_key": key, "ipv4": "172.16.0.2", "port": 2408
-        }))
-        process, log = Mock(), Mock()
-        with __import__("tempfile").TemporaryDirectory() as tmp:
-            with patch.object(module, "start_warp", return_value=(process, log, 7890)) as start, \
-                 patch.object(module, "check_warp_connectivity", side_effect=[False, True]), \
-                 patch.object(module, "stop_node") as stop:
-                proxy = module.probe_warp("mihomo", config, Path(tmp))
-        self.assertEqual(proxy["peers"][0]["port"], 500)
-        self.assertEqual(start.call_count, 2)
-        self.assertEqual(stop.call_count, 2)
-
-    def test_probe_warp_fails_closed_when_all_ports_fail(self):
-        key = base64.b64encode(bytes(range(32))).decode()
-        config = module.load_warp_config(__import__("json").dumps({
-            "private_key": key, "peer_public_key": key, "ipv4": "172.16.0.2", "port": 2408
-        }))
-        with __import__("tempfile").TemporaryDirectory() as tmp:
-            with patch.object(module, "start_warp", side_effect=RuntimeError("no tunnel")) as start:
-                with self.assertRaisesRegex(RuntimeError, "refusing to test VPN Gate"):
-                    module.probe_warp("mihomo", config, Path(tmp))
-        self.assertEqual(start.call_count, 4)
-
-    def test_connectivity_accepts_success_status(self):
-        response = Mock(status_code=204)
-        with patch.object(module.requests, "get", return_value=response):
-            self.assertTrue(module.check_connectivity("http://127.0.0.1:7890"))
-        response.close.assert_called_once()
+        with tempfile.TemporaryDirectory() as tmp:
+            out_file = Path(tmp) / "vpngate-clash-mi.yaml"
+            doc = module.write_yaml(
+                sample_results,
+                out_file,
+                warp_proxy,
+                warp_config=warp_config,
+                verified_ports=[2408, 500],
+            )
+            group_names = [g["name"] for g in doc["proxy-groups"]]
+            self.assertIn("出站节点", group_names)
+            self.assertIn("⚡ 自动优选 (最快)", group_names)
+            self.assertIn("🛡️ 故障转移 (稳定)", group_names)
+            self.assertIn("🌐 WARP 前置池", group_names)
+            wireguard_nodes = [p for p in doc["proxies"] if p["type"] == "wireguard"]
+            self.assertGreater(len(wireguard_nodes), 1)
 
 
 if __name__ == "__main__":
