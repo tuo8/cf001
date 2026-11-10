@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fetch the latest VPN Gate directory, filter and rank reachable Mihomo OpenVPN nodes by latency, and publish a high-availability subscription."""
+"""Fetch the latest VPN Gate directory, filter and rank reachable Mihomo OpenVPN nodes by latency, and publish a dual-mode (Direct + WARP-Chained) high-availability subscription."""
 import argparse
 import base64
 import concurrent.futures
@@ -34,16 +34,16 @@ DEFAULT_WARP_RESERVED = [211, 165, 3]
 # Curated Cloudflare WARP Anycast ingress IPs across distinct CIDR blocks
 # to prevent single-endpoint UDP blocking in mainland China networks.
 DEFAULT_WARP_OPTIMAL_ENDPOINTS = (
-    "162.159.192.1",
     "162.159.193.1",
     "162.159.195.1",
     "188.114.96.1",
-    "188.114.97.1",
     "188.114.98.1",
+    "162.159.192.1",
+    "188.114.97.1",
 )
 
-# AmneziaWG 1.0 pulse obfuscation parameters (can be enabled via VPNGATE_ENABLE_AWG=1 or Worker ?awg=1).
-# Disabled by default during CI Mihomo v1.19.33 probes to avoid Mihomo WireGuard parser issue #3033.
+# AmneziaWG 1.0 pulse obfuscation parameters supported by Mihomo
+# to bypass ISP UDP DPI blocking on client devices in mainland China.
 DEFAULT_AMNEZIA_WG_OPTION = {
     "jc": 4,
     "jmin": 40,
@@ -86,8 +86,6 @@ def load_warp_config(raw=None):
     if address.version != 4:
         raise ValueError("WARP ipv4 must be IPv4")
     endpoint = config.get("endpoint", "engage.cloudflareclient.com")
-    # A workflow-level override tests Cloudflare's documented fallback WireGuard ports
-    # without asking the user to edit or re-upload the private WARP secret.
     port_override = os.getenv("VPNGATE_WARP_PORT")
     port = int(port_override) if port_override else int(config.get("port", 2408))
     mtu = int(config.get("mtu", 1280))
@@ -118,7 +116,7 @@ def load_warp_config(raw=None):
     }
 
 
-def build_warp_proxy(config, name="WARP", endpoint_override=None, port_override=None):
+def build_warp_proxy(config, name="WARP", endpoint_override=None, port_override=None, with_awg=False):
     """Build a Mihomo WireGuard outbound dictionary with optional AmneziaWG obfuscation."""
     endpoint = endpoint_override or config["endpoint"]
     port = int(port_override if port_override is not None else config["port"])
@@ -140,20 +138,19 @@ def build_warp_proxy(config, name="WARP", endpoint_override=None, port_override=
         "mtu": config["mtu"],
         "persistent-keepalive": config["keepalive"],
         "remote-dns-resolve": True,
-        "dns": ["1.1.1.1", "1.0.0.1"],
+        "dns": ["223.5.5.5", "1.1.1.1"],
         "peers": [peer],
     }
     awg_option = config.get("amnezia_wg_option")
+    if with_awg and awg_option is None:
+        awg_option = DEFAULT_AMNEZIA_WG_OPTION.copy()
     if isinstance(awg_option, dict) and awg_option:
         proxy["amnezia-wg-option"] = awg_option.copy()
     return proxy
 
 
 def build_warp_proxies(config, primary_proxy, verified_ports=None):
-    """Build a resilient pool of WARP proxies across multiple Anycast IPs and verified UDP ports."""
-    proxies = [primary_proxy]
-    seen = {(primary_proxy["peers"][0]["server"], int(primary_proxy["peers"][0]["port"]))}
-
+    """Build a resilient pool of WARP proxies using numeric Anycast IPs + AmneziaWG obfuscation."""
     raw_endpoints = os.getenv("VPNGATE_WARP_ENDPOINTS", "").strip()
     if raw_endpoints:
         endpoints = [ep.strip() for ep in raw_endpoints.split(",") if ep.strip()]
@@ -162,23 +159,27 @@ def build_warp_proxies(config, primary_proxy, verified_ports=None):
 
     ports = list(verified_ports) if verified_ports else [int(primary_proxy["peers"][0]["port"]), 2408, 500, 1701, 4500]
     unique_ports = list(dict.fromkeys(p for p in ports if 1 <= int(p) <= 65535))
+    primary_port = unique_ports[0] if unique_ports else 2408
 
-    # 1. Add alternate verified ports on the primary endpoint
+    # Replace blocked 'engage.cloudflareclient.com' hostname on published client config
+    # with numeric Anycast IP (162.159.193.1) + AmneziaWG obfuscation so domestic clients never deadlock on DNS/DPI.
+    publish_awg = os.getenv("VPNGATE_PUBLISH_AWG", "1").strip().lower() not in ("0", "false", "no")
     primary_server = primary_proxy["peers"][0]["server"]
-    for alt_port in unique_ports:
-        key = (primary_server, int(alt_port))
-        if key not in seen:
-            seen.add(key)
-            proxies.append(
-                build_warp_proxy(
-                    config,
-                    name=f"WARP-Port-{alt_port}",
-                    endpoint_override=primary_server,
-                    port_override=alt_port,
-                )
-            )
+    if primary_server == "engage.cloudflareclient.com" and endpoints:
+        primary_server = endpoints[0]
 
-    # 2. Add curated Anycast IPs rotating across verified ports
+    published_primary = build_warp_proxy(
+        config,
+        name="WARP",
+        endpoint_override=primary_server,
+        port_override=primary_port,
+        with_awg=publish_awg,
+    )
+
+    proxies = [published_primary]
+    seen = {(primary_server, int(primary_port))}
+
+    # Add multi-IP and multi-port WARP nodes to the pool
     for idx, ep in enumerate(endpoints):
         chosen_port = unique_ports[idx % len(unique_ports)] if unique_ports else 2408
         key = (ep, int(chosen_port))
@@ -190,6 +191,21 @@ def build_warp_proxies(config, primary_proxy, verified_ports=None):
                     name=f"WARP-优选{idx + 1} ({ep}:{chosen_port})",
                     endpoint_override=ep,
                     port_override=chosen_port,
+                    with_awg=publish_awg,
+                )
+            )
+
+    for alt_port in unique_ports:
+        key = (primary_server, int(alt_port))
+        if key not in seen:
+            seen.add(key)
+            proxies.append(
+                build_warp_proxy(
+                    config,
+                    name=f"WARP-Port-{alt_port}",
+                    endpoint_override=primary_server,
+                    port_override=alt_port,
+                    with_awg=publish_awg,
                 )
             )
     return proxies
@@ -377,7 +393,6 @@ def parse_profile(config, row):
     country = (row.get("CountryLong") or row.get("CountryShort") or "Unknown").strip()
     country_short = (row.get("CountryShort") or "").strip().upper()
     ip_text = (row.get("IP") or host).strip()
-    # Format node display name as "地区 + IP" (e.g. "Japan 106.168.67.207")
     label = re.sub(r"[^A-Za-z0-9._ -]", "", f"{country} {ip_text}")[:80].strip()
     node = {
         "name": label,
@@ -389,12 +404,9 @@ def parse_profile(config, row):
         "username": "vpn",
         "password": "vpn",
         "ca": blocks["ca"],
-        # Explicit OpenVPN/VPNGate defaults so Mihomo does not fall back to unsupported cipher
         "cipher": "AES-128-CBC",
         "auth": "SHA1",
-        # Inner OpenVPN MTU must be smaller than outer WARP MTU (1280) to avoid fragmentation blackholes
         "mtu": 1200,
-        # Force DNS resolution inside the OpenVPN tunnel (requires non-empty dns list)
         "remote-dns-resolve": True,
         "dns": ["1.1.1.1", "8.8.8.8"],
         "handshake-timeout": 15,
@@ -483,7 +495,6 @@ def filter_candidates(items):
         if item.get("speed_bps", min_speed) >= min_speed
         and (0 <= item.get("ping_ms", 50) <= max_ping or item.get("ping_ms", 0) == 0)
     ]
-    # Fallback to all items if strict threshold filtered out too many nodes
     if len(filtered) < min(12, len(items)):
         filtered = list(items)
 
@@ -627,7 +638,6 @@ def measure_connectivity(proxy_url):
                 if response.status_code in (200, 204, 301, 302):
                     response.close()
                     response = None
-                    # Perform one quick warm-tunnel ping to measure pure data-plane RTT without cold handshake overhead
                     warm_start = time.monotonic()
                     try:
                         warm_resp = requests.get(
@@ -709,7 +719,6 @@ def _run_probes(items, binary, workers, diagnostic_root, warp_proxy):
                 print(f"probe error {item['proxy']['name']}: {type(error).__name__}: {error}")
 
         ordered = [passed_by_index[index] for index in sorted(passed_by_index)]
-        # Sort by measured latency_ms when present so fastest nodes appear first
         if any("latency_ms" in item for item in ordered):
             ordered.sort(
                 key=lambda x: (
@@ -718,7 +727,7 @@ def _run_probes(items, binary, workers, diagnostic_root, warp_proxy):
                     -x.get("speed_bps", 0),
                 )
             )
-        max_output = int(os.getenv("VPNGATE_MAX_OUTPUT_NODES", "30"))
+        max_output = int(os.getenv("VPNGATE_MAX_OUTPUT_NODES", "25"))
         if max_output > 0 and len(ordered) > max_output:
             ordered = ordered[:max_output]
         return ordered
@@ -743,33 +752,61 @@ def write_yaml(results, path, warp_proxy, warp_config=None, verified_ports=None)
         warp_proxies = [warp_proxy]
 
     warp_names = [p["name"] for p in warp_proxies]
-    dialer_target = os.getenv("VPNGATE_DIALER_PROXY", "WARP").strip() or "WARP"
+    # Route chained OpenVPN nodes through the auto-tested WARP pool ("🌐 WARP 前置池")
+    # instead of a single static WARP node so blocked WARP IPs automatically fail over.
+    dialer_target = os.getenv("VPNGATE_DIALER_PROXY", "🌐 WARP 前置池").strip() or "🌐 WARP 前置池"
 
-    nodes = []
+    direct_nodes = []
+    chained_nodes = []
     used_names = set(warp_names)
     warp_mtu = int(warp_proxy.get("mtu", 1280))
+
     for item in results:
-        node = {
+        base_name = str(item["proxy"].get("name") or "VPNGate node")
+
+        # 1. Direct OpenVPN node (connects directly from local network without WARP bottleneck)
+        direct_name = f"⚡直连 {base_name}"
+        suffix = 2
+        while direct_name in used_names:
+            direct_name = f"⚡直连 {base_name} ({suffix})"
+            suffix += 1
+        used_names.add(direct_name)
+        direct_node = {
             **item["proxy"],
+            "name": direct_name,
+            "udp": True,
+            "mtu": 1400,
+            "remote-dns-resolve": True,
+            "dns": ["1.1.1.1", "8.8.8.8"],
+        }
+        direct_node.pop("dialer-proxy", None)
+        direct_nodes.append(direct_node)
+
+        # 2. Chained OpenVPN node (routes through resilient WARP pool to bypass IP blocking)
+        chained_name = base_name
+        suffix = 2
+        while chained_name in used_names:
+            chained_name = f"{base_name} ({suffix})"
+            suffix += 1
+        used_names.add(chained_name)
+        chained_node = {
+            **item["proxy"],
+            "name": chained_name,
             "dialer-proxy": dialer_target,
             "udp": True,
             "mtu": min(int(item["proxy"].get("mtu", 1200)), warp_mtu - 80),
             "remote-dns-resolve": True,
             "dns": item["proxy"].get("dns") or ["1.1.1.1", "8.8.8.8"],
         }
-        base_name = str(node.get("name") or "VPNGate node")
-        unique_name = base_name
-        suffix = 2
-        while unique_name in used_names:
-            unique_name = f"{base_name} ({suffix})"
-            suffix += 1
-        node["name"] = unique_name
-        used_names.add(unique_name)
-        nodes.append(node)
-    if not nodes:
+        chained_nodes.append(chained_node)
+
+    if not chained_nodes:
         raise RuntimeError("zero reachable nodes; refusing to publish empty subscription")
 
-    openvpn_names = [node["name"] for node in nodes]
+    direct_names = [n["name"] for n in direct_nodes]
+    chained_names = [n["name"] for n in chained_nodes]
+    all_openvpn_names = direct_names + chained_names
+
     proxy_groups = [
         {
             "name": "出站节点",
@@ -777,32 +814,52 @@ def write_yaml(results, path, warp_proxy, warp_config=None, verified_ports=None)
             "proxies": [
                 "⚡ 自动优选 (最快)",
                 "🛡️ 故障转移 (稳定)",
+                "🚀 直连节点池 (免WARP)",
+                "🔗 链式节点池 (过WARP)",
                 "🌐 WARP 前置池",
                 "WARP",
-            ] + openvpn_names,
+            ] + direct_names + chained_names,
         },
         {
             "name": "⚡ 自动优选 (最快)",
             "type": "url-test",
             "url": "https://cp.cloudflare.com/generate_204",
-            "interval": 180,
+            "interval": 120,
             "tolerance": 50,
             "lazy": False,
-            "proxies": openvpn_names + ["WARP"],
+            "proxies": direct_names + warp_names + chained_names,
         },
         {
             "name": "🛡️ 故障转移 (稳定)",
             "type": "fallback",
             "url": "https://cp.cloudflare.com/generate_204",
-            "interval": 120,
+            "interval": 90,
             "lazy": False,
-            "proxies": openvpn_names + warp_names,
+            "proxies": direct_names + warp_names + chained_names,
+        },
+        {
+            "name": "🚀 直连节点池 (免WARP)",
+            "type": "url-test",
+            "url": "https://cp.cloudflare.com/generate_204",
+            "interval": 120,
+            "tolerance": 50,
+            "lazy": False,
+            "proxies": direct_names,
+        },
+        {
+            "name": "🔗 链式节点池 (过WARP)",
+            "type": "url-test",
+            "url": "https://cp.cloudflare.com/generate_204",
+            "interval": 150,
+            "tolerance": 50,
+            "lazy": False,
+            "proxies": chained_names,
         },
         {
             "name": "🌐 WARP 前置池",
             "type": "url-test",
             "url": "https://cp.cloudflare.com/generate_204",
-            "interval": 180,
+            "interval": 120,
             "tolerance": 30,
             "lazy": False,
             "proxies": warp_names,
@@ -811,6 +868,13 @@ def write_yaml(results, path, warp_proxy, warp_config=None, verified_ports=None)
 
     document = {
         "ipv6": False,
+        "tcp-concurrent": True,
+        "unified-delay": True,
+        "geox-url": {
+            "geoip": "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.dat",
+            "geosite": "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat",
+            "mmdb": "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.metadb",
+        },
         "tun": {
             "route-exclude-address": [
                 "10.0.0.0/8",
@@ -828,19 +892,45 @@ def write_yaml(results, path, warp_proxy, warp_config=None, verified_ports=None)
                 "*.lan",
                 "*.local",
                 "localhost.ptlogin2.qq.com",
+                "+.msftconnecttest.com",
+                "+.msftncsi.com",
                 "ipv6.*",
                 "*.ipv6.*",
             ],
-            "default-nameserver": ["1.1.1.1", "8.8.8.8", "223.5.5.5"],
+            # Use fast domestic DNS for bootstrap & local resolution so DNS never deadlocks
+            # when WARP or an OpenVPN tunnel is still handshaking!
+            "default-nameserver": ["223.5.5.5", "119.29.29.29", "180.76.76.76"],
             "nameserver": [
-                "https://1.1.1.1/dns-query#WARP",
-                "https://8.8.8.8/dns-query#WARP",
+                "https://dns.alidns.com/dns-query",
+                "https://doh.pub/dns-query",
+                "223.5.5.5",
             ],
-            "proxy-server-nameserver": ["223.5.5.5", "119.29.29.29", "1.1.1.1"],
+            "proxy-server-nameserver": [
+                "https://dns.alidns.com/dns-query",
+                "https://doh.pub/dns-query",
+                "223.5.5.5",
+            ],
         },
-        "proxies": warp_proxies + nodes,
+        "proxies": warp_proxies + direct_nodes + chained_nodes,
         "proxy-groups": proxy_groups,
-        "rules": ["MATCH,出站节点"],
+        "rules": [
+            "DOMAIN-SUFFIX,cn,DIRECT",
+            "DOMAIN-SUFFIX,alimama.com,DIRECT",
+            "DOMAIN-SUFFIX,alipay.com,DIRECT",
+            "DOMAIN-SUFFIX,baidu.com,DIRECT",
+            "DOMAIN-SUFFIX,bilibili.com,DIRECT",
+            "DOMAIN-SUFFIX,huaban.com,DIRECT",
+            "DOMAIN-SUFFIX,jd.com,DIRECT",
+            "DOMAIN-SUFFIX,qq.com,DIRECT",
+            "DOMAIN-SUFFIX,taobao.com,DIRECT",
+            "DOMAIN-SUFFIX,tmall.com,DIRECT",
+            "DOMAIN-SUFFIX,weibo.com,DIRECT",
+            "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve",
+            "IP-CIDR,127.0.0.0/8,DIRECT,no-resolve",
+            "IP-CIDR,172.16.0.0/12,DIRECT,no-resolve",
+            "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve",
+            "MATCH,出站节点",
+        ],
     }
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)

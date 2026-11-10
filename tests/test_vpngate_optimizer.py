@@ -124,15 +124,16 @@ KEY
         self.assertEqual(proxy["ip"], "172.16.0.2")
         self.assertEqual(proxy["peers"][0]["reserved"], [1, 2, 3])
 
-    def test_warp_amnezia_wg_opt_in(self):
+    def test_warp_amnezia_wg_published_by_default(self):
         key = base64.b64encode(bytes(range(32))).decode()
-        with patch.dict(module.os.environ, {"VPNGATE_ENABLE_AWG": "1"}):
-            config = module.load_warp_config(__import__("json").dumps({
-                "private_key": key, "peer_public_key": key, "ipv4": "172.16.0.2"
-            }))
-            proxy = module.build_warp_proxy(config)
-            self.assertIn("amnezia-wg-option", proxy)
-            self.assertEqual(proxy["amnezia-wg-option"]["jc"], 4)
+        config = module.load_warp_config(__import__("json").dumps({
+            "private_key": key, "peer_public_key": key, "ipv4": "172.16.0.2"
+        }))
+        primary = module.build_warp_proxy(config)
+        pool = module.build_warp_proxies(config, primary, verified_ports=[2408, 500])
+        self.assertNotEqual(pool[0]["peers"][0]["server"], "engage.cloudflareclient.com")
+        self.assertIn("amnezia-wg-option", pool[0])
+        self.assertEqual(pool[0]["amnezia-wg-option"]["jc"], 4)
 
     def test_warp_reserved_defaults_to_current_registration(self):
         key = base64.b64encode(bytes(range(32))).decode()
@@ -142,7 +143,7 @@ KEY
         self.assertEqual(config["reserved"], [211, 165, 3])
         self.assertEqual(module.build_warp_proxy(config)["peers"][0]["reserved"], [211, 165, 3])
 
-    def test_write_yaml_generates_multi_warp_and_auto_groups(self):
+    def test_write_yaml_generates_direct_and_chained_nodes_without_dns_deadlock(self):
         key = base64.b64encode(bytes(range(32))).decode()
         warp_config = module.load_warp_config(__import__("json").dumps({
             "private_key": key, "peer_public_key": key, "ipv4": "172.16.0.2"
@@ -180,9 +181,15 @@ KEY
             self.assertIn("出站节点", group_names)
             self.assertIn("⚡ 自动优选 (最快)", group_names)
             self.assertIn("🛡️ 故障转移 (稳定)", group_names)
+            self.assertIn("🚀 直连节点池 (免WARP)", group_names)
+            self.assertIn("🔗 链式节点池 (过WARP)", group_names)
             self.assertIn("🌐 WARP 前置池", group_names)
-            wireguard_nodes = [p for p in doc["proxies"] if p["type"] == "wireguard"]
-            self.assertGreater(len(wireguard_nodes), 1)
+            openvpn_nodes = [p for p in doc["proxies"] if p["type"] == "openvpn"]
+            self.assertEqual(len(openvpn_nodes), 2)
+            self.assertNotIn("dialer-proxy", openvpn_nodes[0])
+            self.assertEqual(openvpn_nodes[1]["dialer-proxy"], "🌐 WARP 前置池")
+            # Confirm DNS no longer deadlocks on #WARP
+            self.assertFalse(any("#WARP" in ns for ns in doc["dns"]["nameserver"]))
 
 
 if __name__ == "__main__":
