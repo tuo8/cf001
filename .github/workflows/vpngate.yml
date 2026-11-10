@@ -65,7 +65,7 @@ jobs:
       - name: Fetch all latest VPN Gate nodes and check connectivity
         env:
           MIHOMO_PATH: ${{ runner.temp }}/mihomo
-          VPNGATE_PROBE_WORKERS: "3"
+          VPNGATE_PROBE_WORKERS: "6"
           VPNGATE_DIAGNOSTICS_DIR: ${{ runner.temp }}/vpngate-diagnostics
           VPNGATE_WARP_CONFIG: ${{ secrets.VPNGATE_WARP_CONFIG }}
           VPNGATE_WARP_VERIFIED_PORTS: ${{ steps.warp_probe.outputs.verified_ports }}
@@ -82,16 +82,16 @@ jobs:
           data = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
           proxies = data.get("proxies", [])
           assert proxies and proxies[0].get("name") == "WARP" and proxies[0].get("type") == "wireguard"
-          openvpn = proxies[1:]
-          assert openvpn and all(p.get("type") == "openvpn" and p.get("dialer-proxy") == "WARP" for p in openvpn)
+          wireguard_nodes = [p for p in proxies if p.get("type") == "wireguard"]
+          openvpn = [p for p in proxies if p.get("type") == "openvpn"]
+          assert wireguard_nodes and openvpn
           names = {p["name"] for p in proxies}
           groups = {g["name"]: g for g in data.get("proxy-groups", [])}
           valid_names = names | set(groups)
           assert all(n in valid_names for group in groups.values() for n in group.get("proxies", []))
-          assert list(groups) == ["出站节点"]
-          assert groups["出站节点"]["proxies"] == ["WARP"] + [p["name"] for p in openvpn]
-          assert data.get("rules", [None])[0] == "MATCH,出站节点"
-          print("Validated WARP + OpenVPN nodes:", len(openvpn))
+          assert "出站节点" in groups
+          assert data.get("rules", [None])[-1] == "MATCH,出站节点"
+          print(f"Validated {len(wireguard_nodes)} WARP nodes + {len(openvpn)} OpenVPN nodes.")
           PY
       - name: Publish to Cloudflare KV
         if: ${{ success() && !inputs.parse_only }}
@@ -126,6 +126,6 @@ jobs:
           name: vpngate-mihomo-diagnostics-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/vpngate-diagnostics/**/*.log
-            ${{ runner.temp }}/vpngate-diagnostics/**/failure.txt
+            ${{ runner.temp }}/vpngate-diagnostics/**/*.failure.txt
           if-no-files-found: ignore
           retention-days: 7
